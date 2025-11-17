@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "abiasales"
+version = "0.1.0"
+description = "A/B testing toolkit"
+authors = [{ name = "Oleg Yaksin"}]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "pandas",
+    "numpy>=1.20",
+    "scipy",
+    "scikit-learn",
+    "catboost",
+    "tqdm",
+    "statsmodels"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[project.urls]
+"Homepage" = "https://github.com/aviasales/ABiasales"
+"Repository" = "https://github.com/aviasales/ABiasales"
