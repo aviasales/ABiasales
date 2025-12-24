@@ -3,6 +3,9 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression
 from catboost import CatBoostRegressor
 
+import warnings
+warnings.filterwarnings("ignore")
+
 class VarianceReducer:
     """
     Applies variance reduction using either CUPED (Linear Regression)
@@ -22,7 +25,7 @@ class VarianceReducer:
 
     def __init__(self, method='cuped', model_params=None):
         self.method = method
-        self.model_params = model_params or {"iterations": 100, "silent": True}
+        self.model_params = model_params or {"iterations": 100}
         self.model = None
         self.mean_prediction = None
 
@@ -45,7 +48,7 @@ class VarianceReducer:
         if self.method == 'cuped':
             self.model = LinearRegression()
         elif self.method == 'cupac':
-            self.model = CatBoostRegressor(**self.model_params)
+            self.model = CatBoostRegressor(**self.model_params, logging_level="Silent", verbose=False)
         else:
             raise ValueError("Unsupported variance reduction method")
 

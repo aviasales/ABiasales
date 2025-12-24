@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 from statsmodels.stats.power import tt_ind_solve_power
 from .metrics import calc_pipeline_mean_and_std
+from .weights import calc_weights
+from .stats import weighted_mean, calc_linearization_coef 
 
 def calc_power_table(df,
                      metric_num,
@@ -100,6 +102,9 @@ def calc_power_table(df,
         var_reduction_covariates=var_reduction_covariates
     )
 
+    if apply_linearization:
+        weights = calc_weights(df_exp[metric_num], df_exp[metric_den], weight_method)
+
     r = (1 - control_perc) / control_perc
     data_ = []
     error_col = r'Errors ($\alpha$, $\beta$)'
@@ -111,7 +116,13 @@ def calc_power_table(df,
         for a in alpha:
             for p in power:
                 for u in uplift:
-                    diff = mean * u
+                    if apply_linearization:
+                        r0 = calc_linearization_coef(df_exp[metric_num], df_exp[metric_den], weights)
+                        mu_den = weighted_mean(df_exp[metric_den], weights)
+                        diff = u * r0 * mu_den
+                    else:
+                        diff = mean * u
+
                     h = diff / std
                     n = int(tt_ind_solve_power(effect_size=h, alpha=a, power=p, ratio=r, alternative='two-sided'))
                     data_.append({error_col: f"({a}; {round(1 - p, 2)})", 'Effect': u, '': n})
@@ -126,7 +137,13 @@ def calc_power_table(df,
             for p in power:
                 for s in sample_size:
                     h = tt_ind_solve_power(nobs1=s, alpha=a, power=p, ratio=r, alternative='two-sided')
-                    mde = h * std / mean
+                    if apply_linearization:
+                        r0 = calc_linearization_coef(df_exp[metric_num], df_exp[metric_den], weights)
+                        mu_den = weighted_mean(df_exp[metric_den], weights)
+                        mde = h * std / (r0 * mu_den)
+                    else:
+                        mde = h * std / mean
+
                     data_.append({error_col: f"({a}; {round(1 - p, 2)})", 'Sample size': s, '': str(round(mde * 100, 1)) + '%'})
                     if return_power_list:
                         output_power_list.append(mde)

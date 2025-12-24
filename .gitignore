@@ -1,0 +1,78 @@
+# ===============================
+# Python
+# ===============================
+
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# ===============================
+# Virtual environments
+# ===============================
+.venv/
+venv/
+ENV/
+env/
+.env/
+
+# ===============================
+# Jupyter / IPython
+# ===============================
+.ipynb_checkpoints/
+.profile_default/
+.ipython/
+
+# ===============================
+# Packaging / build
+# ===============================
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# ===============================
+# Pytest / coverage
+# ===============================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# ===============================
+# IDEs / editors
+# ===============================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ===============================
+# OS files
+# ===============================
+.DS_Store
+Thumbs.db
+
+# ===============================
+# Logs
+# ===============================
+*.log
+
+# ===============================
+# MyPy / Ruff / Pyright
+# ===============================
+.mypy_cache/
+.ruff_cache/
+.pyright/
+
+# ===============================
+# Temporary / local configs
+# ===============================
+*.local
+*.tmp

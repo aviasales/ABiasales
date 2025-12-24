@@ -9,6 +9,9 @@ from .data_generation import generate_real_exp_data
 from .stratification import calc_strats_weights
 from .results import get_exp_params, calc_exp_stattest
 
+import warnings
+warnings.filterwarnings("ignore")
+
 def construct_exp_configs(metric_num, metric_den=None,
                           weight_methods=['uniform'], apply_linearization=[False], use_delta_method=[False],
                           stat_methods=['t_test'],
@@ -127,7 +130,11 @@ def run_aa_test_simulation(df,
         pvalues = pvalues[pvalues > 0]
 
         x = np.linspace(0, 1, len(pvalues))
-        fpr_auc = np.trapz(y=x - np.sort(pvalues), x=x) + 0.5
+
+        try:
+            fpr_auc = np.trapz(y=x - np.sort(pvalues), x=x) + 0.5
+        except:
+            fpr_auc = np.trapezoid(y=x - np.sort(pvalues), x=x) + 0.5
 
         if config['den']:
             results.append({
