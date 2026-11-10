@@ -177,7 +177,8 @@ def generate_real_exp_data(df,
         Column name of the denominator (used for ratio metrics).
     metric_type : {'proportion', 'value', 'ratio'}, default='proportion'
         Type of metric to simulate:
-        - 'proportion': binary variable (e.g., conversion)
+        - 'proportion': binary variable (e.g., conversion); uplift converts a part of
+          non-converted units (or reverts converted ones for negative uplift)
         - 'value': additive continuous variable
         - 'ratio': continuous ratio (requires `metric_den`)
     sample_size : int, default=1000
@@ -201,27 +202,26 @@ def generate_real_exp_data(df,
 
     # Case 2: Proportion metric (binary outcome)
     if metric_type == 'proportion':
+        if not df[metric_num].dropna().isin([0, 1]).all():
+            raise ValueError("metric_type='proportion' requires a binary (0/1) metric")
+
         # Calculate adjusted probability with uplift
         base_p = df[metric_num].mean()
         p = base_p * (1 + uplift)
         if not (0 <= p <= 1):
             raise ValueError(f"Adjusted probability {p:.3f} is out of [0, 1] bounds.")
 
-        # Simulate conversion outcomes with injected uplift
-        conv = np.random.binomial(1, p, size=sample_size)
-
-        df_neg = df[df[metric_num] <= 0].reset_index(drop=True)
-        df_pos = df[df[metric_num] > 0].reset_index(drop=True)
-
-        # Try to resample based on simulated outcomes
-        if len(df_neg) > 0 and len(df_pos) > 0:
-            # Match generated conversion labels to real examples
-            df_neg_sample = df_neg.sample(n=sample_size, replace=True).loc[conv == 0]
-            df_pos_sample = df_pos.sample(n=sample_size, replace=True).loc[conv == 1]
-            df_out = pd.concat([df_neg_sample, df_pos_sample]).reset_index(drop=True)
+        # Outcomes of the sampled units are changed instead of sampling units by outcome:
+        # otherwise converted units bring their covariates and strata, which then differ
+        # from control and CUPED or stratification remove a part of the injected uplift
+        df_out = df.sample(n=sample_size, replace=True).reset_index(drop=True)
+        conv = df_out[metric_num].to_numpy()
+        if uplift > 0:
+            converted = np.random.rand(sample_size) < (p - base_p) / (1 - base_p)
+            conv = np.where(conv == 0, converted, conv)
         else:
-            # Fallback: no class separation possible
-            df_out = df.sample(n=sample_size, replace=True).reset_index(drop=True)
+            conv = conv * (np.random.rand(sample_size) < p / base_p)
+        df_out[metric_num] = conv
 
         return df_out
 

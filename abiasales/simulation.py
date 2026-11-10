@@ -88,12 +88,31 @@ def _config_columns(df, config):
     return select_columns(df, config['num'], config['den'], config['strats_cols'],
                           config['var_reduction_covariates'], config['outliers_cols'])
 
+def _config_description(config):
+    # Ratio options are shown only for ratio metrics
+    description = {}
+    if config['den']:
+        description.update({
+            'weight': config['weight_method'],
+            'apply_lin': str(config['apply_linearization']),
+            'use_delta_method': str(config['use_delta_method']),
+        })
+    description.update({
+        'stat': config['stat_method'],
+        'use_strat': str(config['use_stratification']),
+        'var_reduction': config['var_reduction_method'],
+        'handle_outliers': config['handle_outliers'],
+        'outliers_contamination': config['outliers_contamination'],
+    })
+    return description
+
 def run_aa_test_simulation(df,
                            configs,
                            control_sample_size=5000,
                            control_perc=0.5,
                            n_exp=1000,
-                           n_bootstrap=1000):
+                           n_bootstrap=1000,
+                           alpha=0.05):
     """
     Simulates A/A tests to evaluate false positive rate and p-value uniformity
     across different experiment configurations.
@@ -117,11 +136,19 @@ def run_aa_test_simulation(df,
         Number of simulated experiments.
     n_bootstrap : int
         Number of bootstrap samples if bootstrap is used.
+    alpha : float, default=0.05
+        Significance level at which the false positive rate is checked.
 
     Returns
     -------
     pd.DataFrame
-        Summary of false positive rate metrics for each configuration.
+        Summary for each configuration:
+        - fpr: share of A/A tests with p-value below `alpha`;
+        - fpr_valid: False if `fpr` is significantly above `alpha`
+          (one-sided binomial test at the 1% level). With 1000 experiments it flags
+          an observed FPR from 6.8% at alpha = 0.05 and detects a true FPR of 7.5% in 82% of runs;
+        - fpr-pvalue_auc: area between the empirical distribution of p-values and the uniform one
+          plus 0.5, so 0.5 means uniform p-values and larger values mean too small p-values.
     """
     treatment_sample_size = int(control_sample_size * (1 - control_perc) / control_perc)
     results = []
@@ -165,34 +192,20 @@ def run_aa_test_simulation(df,
         trapezoid = getattr(np, 'trapezoid', None) or np.trapz  # np.trapz is removed in numpy 2
         fpr_auc = trapezoid(y=x - np.sort(pvalues), x=x) + 0.5
 
-        if config['den']:
-            results.append({
-                'weight': config['weight_method'],
-                'apply_lin': str(config['apply_linearization']),
-                'use_delta_method': str(config['use_delta_method']),
-                'stat': config['stat_method'],
-                'use_strat': str(config['use_stratification']),
-                'var_reduction': config['var_reduction_method'],
-                'handle_outliers': config['handle_outliers'],
-                'outliers_contamination': config['outliers_contamination'],
-                'fpr-pvalue_auc': fpr_auc,
-                'pvalues_aa_uniform': scipy.stats.kstest(pvalues, scipy.stats.uniform(0, 1).cdf).pvalue > 0.001
-            })
-        else:
-            results.append({
-                'stat': config['stat_method'],
-                'use_strat': str(config['use_stratification']),
-                'var_reduction': config['var_reduction_method'],
-                'handle_outliers': config['handle_outliers'],
-                'outliers_contamination': config['outliers_contamination'],
-                'fpr-pvalue_auc': fpr_auc,
-                'pvalues_aa_uniform': scipy.stats.kstest(pvalues, scipy.stats.uniform(0, 1).cdf).pvalue > 0.001
-            })
+        # A test of uniformity of all p-values is too weak: with 1000 experiments
+        # the KS test accepted a true FPR of 7.5% in 62% of runs
+        n_positive = int(np.sum(pvalues < alpha))
+        results.append({
+            **_config_description(config),
+            'fpr': n_positive / len(pvalues),
+            'fpr_valid': bool(scipy.stats.binomtest(n_positive, len(pvalues), alpha, alternative='greater').pvalue >= 0.01),
+            'fpr-pvalue_auc': fpr_auc,
+        })
 
     results = pd.DataFrame(results)
     display_table(
         results,
-        lambda s: s.map(lambda x: 'background-color: red' if x is False else '', subset=['pvalues_aa_uniform'])
+        lambda s: s.map(lambda x: 'background-color: red' if x is False else '', subset=['fpr_valid'])
     )
     
     return results
@@ -204,7 +217,8 @@ def run_ab_test_simulation(df,
                            n_exp=1000,
                            metric_type='value',
                            uplift=0.1,
-                           n_bootstrap=1000):
+                           n_bootstrap=1000,
+                           alpha=0.05):
     """
     Simulates A/B tests to evaluate statistical power across configurations.
 
@@ -212,7 +226,7 @@ def run_ab_test_simulation(df,
     - Generates control and treatment groups from real data.
     - Injects uplift into treatment group.
     - Applies the full analysis pipeline (weighting, linearization, stratification, variance reduction, handling outliers).
-    - Measures power as the proportion of p-values < 0.05.
+    - Measures power as the proportion of p-values below `alpha`.
 
     Parameters
     ----------
@@ -232,6 +246,8 @@ def run_ab_test_simulation(df,
         Relative uplift to inject into treatment group.
     n_bootstrap : int
         Number of bootstrap iterations.
+    alpha : float, default=0.05
+        Significance level.
 
     Returns
     -------
@@ -281,29 +297,8 @@ def run_ab_test_simulation(df,
         pvalues = np.asarray(pvalues)
         # Drop failed experiments only: p-value = 0 is a valid (most significant) result
         pvalues = pvalues[~np.isnan(pvalues)]
-        power = np.mean(pvalues < 0.05)
-
-        if config['den']:
-            results.append({
-                'weight': config['weight_method'],
-                'apply_lin': str(config['apply_linearization']),
-                'use_delta_method': str(config['use_delta_method']),
-                'stat': config['stat_method'],
-                'use_strat': str(config['use_stratification']),
-                'var_reduction': config['var_reduction_method'],
-                'handle_outliers': config['handle_outliers'],
-                'outliers_contamination': config['outliers_contamination'],
-                'power': power
-            })
-        else:
-            results.append({
-                'stat': config['stat_method'],
-                'use_strat': str(config['use_stratification']),
-                'var_reduction': config['var_reduction_method'],
-                'handle_outliers': config['handle_outliers'],
-                'outliers_contamination': config['outliers_contamination'],
-                'power': power
-            })
+        power = np.mean(pvalues < alpha)
+        results.append({**_config_description(config), 'power': power})
 
     results = pd.DataFrame(results)
     display_table(results, lambda s: s.background_gradient(subset=['power'], cmap='Greens'))

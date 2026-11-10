@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+import scipy.stats
 
 from abiasales import results, simulation
 from abiasales.results import get_exp_params, check_exp_params
@@ -56,7 +57,7 @@ def test_aa_simulation_handles_outliers_once(value_df, monkeypatch):
     configs = construct_exp_configs('value', handle_outliers=['remove'], outliers_contamination=[0.05], outliers_cols=['value'])
     res = run_aa_test_simulation(value_df, configs, control_sample_size=500, n_exp=3)
     assert sizes == [1000, 1000, 1000]
-    assert {'fpr-pvalue_auc', 'pvalues_aa_uniform'} <= set(res.columns)
+    assert {'fpr', 'fpr_valid', 'fpr-pvalue_auc'} <= set(res.columns)
 
 
 def test_ab_simulation_keeps_zero_pvalues(value_df):
@@ -70,3 +71,16 @@ def test_aa_simulation_for_ratio_metric(ratio_df):
     configs = construct_exp_configs('clicks', 'views', weight_methods=['size'], use_delta_method=[True])
     res = run_aa_test_simulation(ratio_df, configs, control_sample_size=500, n_exp=20)
     assert list(res['weight']) == ['size'] and list(res['use_delta_method']) == ['True']
+
+
+@pytest.mark.parametrize('inflation, valid', [(1.0, True), (1.15, False)])
+def test_aa_simulation_flags_inflated_false_positive_rate(value_df, monkeypatch, inflation, valid):
+    # Regression: the KS test of p-values accepted a true FPR of 7.5% in most runs of 1000 experiments
+    rng = np.random.default_rng(1)
+    def fake_test(*args, **kwargs):
+        z = rng.normal(0, inflation)
+        return pd.DataFrame({'pvalue': [2 * scipy.stats.norm.sf(abs(z))]})
+    monkeypatch.setattr(simulation, 'calc_exp_stattest', fake_test)
+    res = run_aa_test_simulation(value_df, construct_exp_configs('value'), control_sample_size=100, n_exp=2000)
+    assert bool(res['fpr_valid'].iloc[0]) is valid
+    assert res['fpr'].iloc[0] == pytest.approx(2 * scipy.stats.norm.sf(1.96 / inflation), abs=0.015)

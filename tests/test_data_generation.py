@@ -45,6 +45,29 @@ def test_proportion_uplift(source):
     assert out['flag'].mean() == pytest.approx(0.3, abs=0.01)
 
 
+def test_proportion_uplift_keeps_covariates_and_strata(rng):
+    # Regression: uplift was injected by sampling converted units, which brought their covariates
+    # and strata into the treatment group, so CUPED and stratification removed a part of it
+    flag = (rng.random(20000) < 0.2).astype(int)
+    source = pd.DataFrame({'flag': flag, 'cov': flag * 5 + rng.normal(0, 1, 20000),
+                           'strata': np.where(rng.random(20000) < 0.3 + 0.4 * flag, 'x', 'y')})
+    a = generate_real_exp_data(source, 'flag', metric_type='proportion', sample_size=100000)
+    b = generate_real_exp_data(source, 'flag', metric_type='proportion', sample_size=100000, uplift=0.5)
+    assert b['flag'].mean() == pytest.approx(0.3, abs=0.01)
+    assert b['cov'].mean() == pytest.approx(a['cov'].mean(), abs=0.05)
+    assert (b['strata'] == 'x').mean() == pytest.approx((a['strata'] == 'x').mean(), abs=0.01)
+
+
+def test_negative_proportion_uplift(source):
+    out = generate_real_exp_data(source, 'flag', metric_type='proportion', sample_size=50000, uplift=-0.5)
+    assert out['flag'].mean() == pytest.approx(0.1, abs=0.01)
+
+
+def test_proportion_requires_binary_metric(source):
+    with pytest.raises(ValueError, match='binary'):
+        generate_real_exp_data(source, 'value', metric_type='proportion', uplift=0.1)
+
+
 def test_proportion_out_of_bounds(source):
     with pytest.raises(ValueError):
         generate_real_exp_data(source, 'flag', metric_type='proportion', uplift=5)
