@@ -3,7 +3,7 @@ import pandas as pd
 from statsmodels.stats.power import tt_ind_solve_power
 from .metrics import calc_pipeline_mean_and_std
 from .weights import calc_weights
-from .stats import weighted_mean, calc_linearization_coef 
+from .stats import weighted_mean, calc_linearization_coef
 
 def calc_power_table(df,
                      metric_num,

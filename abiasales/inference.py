@@ -83,8 +83,8 @@ def calc_stattest_proportion_test(proportion_1, proportion_2, uplift_type='rel',
 
     Example
     -------
-    >>> calc_stattest_proportion_test([0, 1, 1, 0], [1, 1, 1, 0, 1])
-    (0.317, (-0.05, 0.22))
+    >>> calc_stattest_proportion_test([0] * 900 + [1] * 100, [0] * 880 + [1] * 120)
+    (0.154, (-0.066, 0.539))
     """
 
     for values in (proportion_1, proportion_2):
@@ -155,7 +155,7 @@ def calc_stattest_z_test(mean_1, std_1, nobs_1, mean_2, std_2, nobs_2, uplift_ty
     Example
     -------
     >>> calc_stattest_z_test(100, 10, 1000, 110, 12, 1000, uplift_type='abs')
-    (9.7e-91, (9.03, 10.97))
+    (4.0e-91, (9.03, 10.97))
     """
 
     diff = mean_2 - mean_1
@@ -225,7 +225,7 @@ def calc_stattest_t_test(mean_1, std_1, nobs_1, mean_2, std_2, nobs_2, uplift_ty
     Example
     -------
     >>> calc_stattest_t_test(100, 10, 1000, 110, 12, 1000, uplift_type='abs')
-    (1.6e-82, (9.03, 10.97))
+    (8.2e-83, (9.03, 10.97))
     """
 
     pvalue = scipy.stats.ttest_ind_from_stats(
@@ -323,8 +323,9 @@ def calc_stattest_bootstrap(metric_1, weights_1, metric_2, weights_2, uplift_typ
 
     Example
     -------
-    >>> calc_stattest_bootstrap([0.1, 0.2], [1, 1], [0.3, 0.4], [1, 1])
-    (0.04, (0.05, 0.28))
+    >>> rng = np.random.default_rng(0)
+    >>> calc_stattest_bootstrap(rng.normal(1, 1, 1000), None, rng.normal(1.1, 1, 1000), None, random_state=42)
+    (0.0, (0.060, 0.249))
     """
 
     rng = np.random.default_rng(random_state)
@@ -395,7 +396,10 @@ def calc_stattest(mean_1=None, std_1=None, nobs_1=None, weights_1=None, metric_1
     Returns
     -------
     pd.DataFrame
-        With columns: mean_1, mean_2, uplift, confint, pvalue.
+        Single row with numeric columns: mean_1, mean_2, uplift_type,
+        uplift, confint (tuple of lower and upper bounds), pvalue.
+        Relative uplift and its bounds are fractions (0.05 means +5%).
+        Use `results.format_results` for a human-readable table.
     """
 
     if mean_1 is None:
@@ -437,22 +441,11 @@ def calc_stattest(mean_1=None, std_1=None, nobs_1=None, weights_1=None, metric_1
     else:
         uplift = mean_2 / mean_1 - 1
 
-    # Format confidence interval
-    if confint is not None:
-        if uplift_type == 'abs':
-            confint_fmt = tuple(map(lambda x: round(x, 3), confint))
-            uplift_fmt = round(uplift, 3)
-        else:
-            confint_fmt = tuple(map(lambda x: str(round(x * 100, 2)) + '%', confint))
-            uplift_fmt = str(round(uplift * 100, 2)) + '%'
-    else:
-        confint_fmt = None
-        uplift_fmt = None
-
     return pd.DataFrame({
-        'mean_1': [mean_1],
-        'mean_2': [mean_2],
-        'uplift': [uplift_fmt],
-        'confint': [confint_fmt],
-        'pvalue': [pvalue]
+        'mean_1': [float(mean_1)],
+        'mean_2': [float(mean_2)],
+        'uplift_type': [uplift_type],
+        'uplift': [float(uplift)],
+        'confint': [tuple(float(x) for x in confint)],
+        'pvalue': [float(pvalue)]
     })

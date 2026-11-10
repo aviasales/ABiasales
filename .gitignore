@@ -76,3 +76,5 @@ Thumbs.db
 # ===============================
 *.local
 *.tmp
+# CatBoost training logs
+catboost_info/

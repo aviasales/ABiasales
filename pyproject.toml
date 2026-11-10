@@ -4,24 +4,34 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "abiasales"
-version = "0.1.0"
+version = "0.2.0"
 description = "A/B testing toolkit"
 authors = [{ name = "Oleg Yaksin"}]
 license = { text = "MIT" }
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 dependencies = [
-    "pandas",
-    "numpy>=1.20",
-    "scipy",
-    "scikit-learn",
-    "catboost",
+    "pandas>=2.1",
+    "numpy>=1.22",
+    "scipy>=1.9",
+    "scikit-learn>=1.0",
+    "catboost>=1.0",
     "tqdm",
-    "statsmodels"
+    "statsmodels>=0.14"
 ]
+
+[project.optional-dependencies]
+# Styled tables in Jupyter
+display = ["jinja2", "matplotlib", "ipython"]
+test = ["pytest>=7"]
 
 [tool.setuptools.packages.find]
 where = ["."]
+include = ["abiasales*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: statistical calibration tests with many simulated experiments"]
 
 [project.urls]
 "Homepage" = "https://github.com/aviasales/ABiasales"

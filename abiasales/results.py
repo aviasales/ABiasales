@@ -1,6 +1,4 @@
-import numpy as np
 import pandas as pd
-import scipy.stats
 from statsmodels.stats.multitest import multipletests
 from .cleaning import remove_outliers, cap_above_quantile
 from .metrics import calc_groups_stats, select_columns
@@ -32,8 +30,44 @@ def display_table(df, style=None):
     except (ImportError, AttributeError):
         print(df.to_string())
 
+def format_results(results):
+    """
+    Formats uplift and confidence interval columns of a results table for display.
+
+    Parameters
+    ----------
+    results : pd.DataFrame
+        Output of `calc_stattest`, `calc_exp_stattest` or `calc_exp_results`.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of the table where relative uplifts are shown as percents and
+        absolute uplifts with 4 significant digits.
+    """
+    def fmt(x, uplift_type):
+        return f"{x:.2%}" if uplift_type == 'rel' else f"{x:.4g}"
+
+    df = results.copy()
+    df['uplift'] = [fmt(u, t) for u, t in zip(df['uplift'], df['uplift_type'])]
+    df['confint'] = [f"({fmt(lo, t)}, {fmt(up, t)})" for (lo, up), t in zip(df['confint'], df['uplift_type'])]
+    return df
+
 def get_exp_params(metric_dict):
-    
+    """
+    Fills a metric configuration with default values.
+
+    Parameters
+    ----------
+    metric_dict : dict
+        Metric configuration, see `calc_exp_results`. Only 'num' is required.
+
+    Returns
+    -------
+    dict
+        Configuration with all supported keys.
+    """
+
     params = dict()
     params['num'] = metric_dict['num']
 
@@ -141,10 +175,11 @@ def calc_exp_stattest(df, exp_group_col, eg1, eg2, metric_dict,
     Returns
     -------
     pd.DataFrame
-        A single-row DataFrame containing:
+        A single-row DataFrame containing numeric columns:
             - mean_1
             - mean_2
-            - uplift
+            - uplift_type
+            - uplift (fraction for relative uplift)
             - confint (tuple)
             - pvalue
     """
@@ -243,12 +278,13 @@ def calc_exp_results(df, exp_group_col, metrics,
     -------
     pd.DataFrame
         Combined results for each metric and pair of experiment groups, including:
-        - mean_control
-        - mean_treatment
-        - uplift
-        - confint (confidence interval for uplift)
+        - mean_1, mean_2 (group means)
+        - uplift_type ('abs' or 'rel')
+        - uplift (numeric, fraction for relative uplift)
+        - confint (tuple with confidence interval for uplift)
         - pvalue_init (raw p-value from stat test)
         - pvalue (p-value correction for multiple tests)
+        Use `format_results` to get a human-readable table.
     """
 
     exp_groups = sorted(df[exp_group_col].unique())
@@ -282,7 +318,7 @@ def calc_exp_results(df, exp_group_col, metrics,
 
     if display_colored_results:
         display_table(
-            results,
+            format_results(results),
             lambda s: s.map(lambda x: 'background-color: #90ee90' if x<=pvalue_threshold else '', subset=['pvalue'])
         )
 

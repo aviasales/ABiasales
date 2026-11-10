@@ -1,5 +1,5 @@
 import numpy as np
-import scipy
+import scipy.stats
 
 def weighted_mean(x, w):
     """
@@ -211,7 +211,7 @@ def calc_delta_method_ratio_confint(
     Examples
     --------
     >>> calc_delta_method_ratio_confint(0.10, 0.03, 1000, 0.12, 0.035, 1000)
-    (0.015..., 0.185...)
+    (0.169, 0.231)
     """
 
     mean_r = (mean_2 / mean_1) - 1 + (mean_2 / mean_1**3) * (std_1**2 / nobs_1)

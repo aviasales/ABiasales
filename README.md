@@ -12,6 +12,11 @@ It includes:
 pip install git+https://github.com/aviasales/ABiasales.git
 ```
 
+Styled result tables in Jupyter need optional dependencies:
+```bash
+pip install "abiasales[display] @ git+https://github.com/aviasales/ABiasales.git"
+```
+
 ## Quick start
 ```python
 from abiasales.results import calc_exp_results
@@ -37,9 +42,16 @@ results = calc_exp_results(
 )
 ```
 
+`results` is numeric: relative uplift and its confidence interval are fractions (`0.05` means +5%).
+In Jupyter the function also displays a formatted table, outside Jupyter it prints it as text.
+`format_results(results)` returns the same human-readable table.
+
+Incompatible method combinations raise `ValueError`, e.g. Delta Method requires `weight_method='size'`,
+proportion test and bootstrap ignore stratification.
+
 ## Tutorials
-- [Overview of all library functions](https://github.com/aviasales/ABiasales/blob/master/tutorials/Tutorial%20(all%20functions).ipynb)
-- [Example of experiment analysis](https://github.com/aviasales/ABiasales/blob/master/tutorials/Tutorial%20(experiment%20pipeline).ipynb)
+- [Overview of all library functions](https://github.com/aviasales/ABiasales/blob/main/tutorials/Tutorial%20(all%20functions).ipynb)
+- [Example of experiment analysis](https://github.com/aviasales/ABiasales/blob/main/tutorials/Tutorial%20(experiment%20pipeline).ipynb)
 
 ## Modules
 - `cleaning.py`: outlier handling  
@@ -53,6 +65,13 @@ results = calc_exp_results(
 - `results.py`: A/B test result summaries  
 - `data_generation.py`: synthetic data generation  
 - `simulation.py`: A/A and A/B test simulations  
+
+## Tests
+```bash
+pip install -e ".[test]"
+pytest              # all tests
+pytest -m "not slow"  # skip statistical calibration tests
+```
 
 
 ## Author

@@ -1,14 +1,10 @@
+import warnings
 import numpy as np
 import pandas as pd
 import scipy.stats
 from tqdm import tqdm
-from statsmodels.stats.multitest import multipletests
-from .metrics import calc_groups_stats
 from .data_generation import generate_real_exp_data
-from .stratification import calc_strats_weights
 from .results import get_exp_params, calc_exp_stattest, display_table
-
-import warnings
 
 def construct_exp_configs(metric_num, metric_den=None,
                           weight_methods=['uniform'], apply_linearization=[False], use_delta_method=[False],
@@ -16,6 +12,36 @@ def construct_exp_configs(metric_num, metric_den=None,
                           use_stratification=[False], strats_cols=[],
                           var_reduction_methods=[None], var_reduction_covariates=[],
                           handle_outliers=[None], outliers_contamination=[0.001], outliers_cols=[]):
+    """
+    Builds metric configurations for all valid combinations of the given methods.
+
+    Each argument except `metric_num`, `metric_den`, `strats_cols`,
+    `var_reduction_covariates` and `outliers_cols` is a list of options.
+    Incompatible combinations (e.g., Delta Method without 'size' weights,
+    proportion test with variance reduction) are skipped.
+
+    Parameters
+    ----------
+    metric_num : str
+        Name of numerator column.
+    metric_den : str or None
+        Name of denominator column.
+    weight_methods, apply_linearization, use_delta_method, stat_methods,
+    use_stratification, var_reduction_methods, handle_outliers, outliers_contamination : list
+        Options to combine, see `calc_exp_results` for possible values.
+    strats_cols, var_reduction_covariates, outliers_cols : list of str
+        Columns shared by all configurations.
+
+    Returns
+    -------
+    list of dict
+        Metric configurations for `run_aa_test_simulation` / `run_ab_test_simulation`.
+
+    Raises
+    ------
+    ValueError
+        If no valid combination is left.
+    """
 
     configs = [
         {

@@ -1,28 +1,59 @@
 import numpy as np
 import pandas as pd
-import scipy
+import scipy.stats
 
 def generate_correlated_variable(base, corr_coef=0.6):
+    """
+    Generates a variable with the given correlation to `base` and the same mean and std.
+
+    Parameters
+    ----------
+    base : array-like
+        Base variable.
+    corr_coef : float, default=0.6
+        Target Pearson correlation with `base`.
+
+    Returns
+    -------
+    np.ndarray
+        Correlated variable (e.g., a pre-experiment covariate for CUPED).
+    """
 
     base = np.asarray(base)
     base_mean = base.mean()
     base_std = base.std()
 
-    # Стандартизируем
+    # Standardize
     base_stdzd = (base - base_mean) / base_std
 
-    # Генерируем независимый шум
+    # Independent noise
     noise = np.random.normal(loc=0.0, scale=1.0, size=len(base))
 
-    # Линейная комбинация
+    # Linear combination with the target correlation
     combined = corr_coef * base_stdzd + np.sqrt(1 - corr_coef**2) * noise
 
-    # Приводим к исходному масштабу
+    # Back to the original scale
     combined_scaled = combined * base_std + base_mean
 
     return combined_scaled
 
 def create_test_data(uplift=0.1, n_users=10000):
+    """
+    Generates a synthetic user-level dataset for tutorials and tests.
+
+    Parameters
+    ----------
+    uplift : float, default=0.1
+        Relative shift of click and purchase rates.
+    n_users : int, default=10000
+        Number of users.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: uid, platform, country, strata, views, clicks, payer_flag,
+        purchases and pre-experiment covariates views_cov, clicks_cov, purchases_cov.
+    """
 
     strata_stats = {
         'mobile_RU': {
@@ -47,7 +78,7 @@ def create_test_data(uplift=0.1, n_users=10000):
         }
     }
 
-    # Базовый датафрейм
+    # Base dataframe
     df = pd.DataFrame({
         'uid': np.arange(n_users),
         'platform': np.random.choice(['mobile', 'desktop'], size=n_users),
@@ -92,7 +123,7 @@ def create_test_data(uplift=0.1, n_users=10000):
         n_values = df.loc[segment_mask, 'views'].astype(int)
         df.loc[segment_mask, 'clicks'] = scipy.stats.binom(n=n_values, p=success_rate).rvs()
 
-    # Генерируем ковариаты
+    # Pre-experiment covariates
     cov_corr = 0.3
     df['views_cov'] = generate_correlated_variable(df['views'], corr_coef=cov_corr)
     df['clicks_cov'] = generate_correlated_variable(df['clicks'], corr_coef=cov_corr)
