@@ -38,3 +38,11 @@ def test_remove_outliers_with_duplicate_index(rng):
     cleaned = remove_outliers(df, ['x'], contamination=0.01)
     assert len(cleaned) == len(remove_outliers(df.reset_index(drop=True), ['x'], contamination=0.01))
     assert len(cleaned) < len(df)
+
+
+def test_capping_a_rare_metric_raises(rng):
+    # Regression: the 99% quantile of a metric with 0.1% non-zero values is 0, so capping zeroed the metric
+    df = pd.DataFrame({'x': (rng.random(4000) < 0.001) * rng.exponential(100, 4000)})
+    with pytest.raises(ValueError, match='only'):
+        cap_above_quantile(df, ['x'], q=0.99)
+    assert cap_above_quantile(pd.DataFrame({'x': [1.0] * 10}), ['x'], q=0.99)['x'].eq(1).all()

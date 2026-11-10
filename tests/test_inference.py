@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import scipy.stats
-from statsmodels.stats.proportion import test_proportions_2indep as sm_proportions_test
+from statsmodels.stats.proportion import confint_proportions_2indep, test_proportions_2indep as sm_proportions_test
 
 from abiasales.inference import (
     check_groups_distribution, calc_stattest_proportion_test, calc_stattest_z_test,
@@ -53,11 +53,29 @@ def test_rel_confint_contains_uplift():
 
 def test_proportion_test_matches_statsmodels():
     a, b = [0] * 900 + [1] * 100, [0] * 880 + [1] * 120
-    pvalue, (low, up) = calc_stattest_proportion_test(a, b, uplift_type='rel')
-    assert pvalue == pytest.approx(sm_proportions_test(120, 1000, 100, 1000).pvalue)
-    assert low < 0.2 < up
-    _, (low_abs, up_abs) = calc_stattest_proportion_test(a, b, uplift_type='abs')
-    assert low_abs < 0.02 < up_abs
+    for uplift_type, compare, shift in [('rel', 'ratio', 1), ('abs', 'diff', 0)]:
+        pvalue, confint = calc_stattest_proportion_test(a, b, uplift_type=uplift_type)
+        assert pvalue == pytest.approx(sm_proportions_test(120, 1000, 100, 1000, method='score', compare=compare).pvalue)
+        expected = confint_proportions_2indep(120, 1000, 100, 1000, method='score', compare=compare)
+        np.testing.assert_allclose(confint, np.array(expected) - shift, rtol=1e-6)
+
+
+def test_proportion_confint_agrees_with_pvalue(rng):
+    # Regression: the Wald p-value and the Newcombe interval disagreed, and the statsmodels score
+    # interval of the difference failed on samples like 2 and 1 successes out of 100
+    for _ in range(300):
+        n = int(rng.choice([50, 100, 1000]))
+        p = rng.uniform(0.01, 0.3)
+        a, b = (rng.random(n) < p).astype(int), (rng.random(n) < p * rng.uniform(0.7, 1.5)).astype(int)
+        for uplift_type in ['rel', 'abs']:
+            pvalue, (low, up) = calc_stattest_proportion_test(a, b, uplift_type)
+            if np.isnan(pvalue):
+                continue
+            assert (pvalue < 0.05) == (low > 0 or up < 0)
+    _, (low, up) = calc_stattest_proportion_test([0] * 99 + [1], [0] * 100)
+    assert low == -1 and 0 < up < np.inf
+    _, (low, up) = calc_stattest_proportion_test([0] * 100, [0] * 99 + [1])
+    assert -1 < low < 0 and up == np.inf
 
 
 def test_proportion_test_requires_binary_values():
@@ -126,3 +144,27 @@ def test_check_groups_distribution_with_numeric_groups():
 def test_check_groups_distribution_detects_srm():
     df = pd.DataFrame({'g': ['A'] * 5300 + ['B'] * 4700})
     assert check_groups_distribution(df, 'g').loc['Difference p-value'].iloc[0] < 0.001
+
+
+def test_bootstrap_confint_agrees_with_pvalue(rng):
+    # Regression: the percentile p-value and interval disagreed and were liberal on skewed data
+    for _ in range(200):
+        n_bootstrap = int(rng.choice([20, 100, 499, 500]))
+        alpha = float(rng.choice([0.01, 0.05, 0.1]))
+        uplift_type = str(rng.choice(['rel', 'abs']))
+        a, b = rng.lognormal(0, 1, 50), rng.lognormal(0.3 * rng.random(), 1, 50)
+        pvalue, (low, up) = calc_stattest_bootstrap(a, None, b, None, uplift_type, alpha, n_bootstrap,
+                                                    random_state=int(rng.integers(1e9)))
+        assert pvalue >= 1 / (n_bootstrap + 1)
+        assert (pvalue < alpha) == (low > 0 or up < 0)
+
+
+def test_bootstrap_relative_confint_inverts_the_test(rng):
+    # The interval of the relative uplift contains the uplifts u for which mean_2 - (1 + u) * mean_1 is not rejected
+    a, b = rng.lognormal(0, 1.5, 300), rng.lognormal(0.2, 1.5, 300)
+    _, (low, up) = calc_stattest_bootstrap(a, None, b, None, 'rel', random_state=0)
+    observed = b.mean() / a.mean() - 1
+    assert low < observed < up
+    for u in [low - 0.01, up + 0.01]:
+        p, _ = calc_stattest_bootstrap(a, None, b / (1 + u), None, 'abs', random_state=0)
+        assert p < 0.05

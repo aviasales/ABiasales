@@ -15,10 +15,14 @@ def test_invalid_method():
 
 def test_cuped_matches_theta_formula_and_keeps_mean(value_df):
     x, y = value_df[['cov']], value_df['value']
-    adjusted = VarianceReducer('cuped').fit_transform(x, y)
+    reducer = VarianceReducer('cuped')
+    adjusted = reducer.fit_transform(x, y)
     theta = np.cov(value_df['cov'], y)[0, 1] / np.var(value_df['cov'], ddof=1)
     expected = y - theta * (value_df['cov'] - value_df['cov'].mean())
-    np.testing.assert_allclose(adjusted, expected)
+    # New data is adjusted as is, the in-sample deviations are scaled by (n - 1) / (n - p - 1)
+    np.testing.assert_allclose(reducer.transform(x, y), expected)
+    n = len(y)
+    np.testing.assert_allclose(adjusted, y.mean() + (expected - y.mean()) * (n - 1) / (n - 2))
     assert adjusted.mean() == pytest.approx(y.mean())
     assert adjusted.var() < 0.5 * y.var()
 

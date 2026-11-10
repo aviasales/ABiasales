@@ -1,7 +1,7 @@
 import numpy as np
 import scipy.stats
 import pandas as pd
-from statsmodels.stats.proportion import test_proportions_2indep, confint_proportions_2indep, proportions_ztest
+from statsmodels.stats.proportion import score_test_proportions_2indep, proportions_ztest
 from .stats import calc_fieller_ratio_confint
 
 def check_groups_distribution(df, exp_group_col, control_name='A', control_perc=0.5):
@@ -49,6 +49,37 @@ def check_groups_distribution(df, exp_group_col, control_name='A', control_perc=
     
     return df_out
 
+def _invert_test(margin, estimate, step, limits=(-np.inf, np.inf), n_iter=60):
+    """
+    Returns the interval of parameters not rejected by a test, i.e. with a non-negative `margin`.
+
+    Starting from `estimate`, the step is doubled until the margin is negative (NaN counts as negative),
+    then the bound is refined by bisection. If the margin stays non-negative up to a limit of the
+    parameter, the bound is this limit.
+    """
+    bounds = []
+    for direction, limit in zip((-1, 1), limits):
+        inside, outside, width = estimate, None, step
+        for _ in range(n_iter):
+            candidate = estimate + direction * width
+            if direction * (candidate - limit) >= 0:
+                candidate = limit
+            if not margin(candidate) >= 0:
+                outside = candidate
+                break
+            inside, width = candidate, 2 * width
+            if candidate == limit:
+                break
+        if outside is None:
+            bounds.append(limit)
+            continue
+        for _ in range(n_iter):
+            middle = (inside + outside) / 2
+            inside, outside = (middle, outside) if margin(middle) >= 0 else (inside, middle)
+        bounds.append(inside)
+    return tuple(bounds)
+
+
 def calc_stattest_proportion_test(proportion_1, proportion_2, uplift_type='rel', confint_alpha=0.05):
     """
     Performs a two-sample Z-test for binary proportion data and returns p-value and confidence interval.
@@ -77,40 +108,52 @@ def calc_stattest_proportion_test(proportion_1, proportion_2, uplift_type='rel',
 
     Notes
     -----
-    - Internally uses `statsmodels.stats.proportion.test_proportions_2indep` for hypothesis testing,
-      and `confint_proportions_2indep` for confidence intervals.
+    - Uses the score test of `statsmodels.stats.proportion.score_test_proportions_2indep`
+      (Miettinen-Nurminen) for the difference or the ratio of proportions. The interval contains
+      the differences or ratios it does not reject, so it excludes zero exactly when the p-value is
+      below `confint_alpha`. The default tests and intervals of statsmodels disagreed in 0.4% of cases,
+      and its score interval fails to bracket the bounds of the difference for ~2% of samples.
     - When reporting relative uplift, the confidence bounds are adjusted to match the (p2/p1 - 1) scale.
 
     Example
     -------
     >>> calc_stattest_proportion_test([0] * 900 + [1] * 100, [0] * 880 + [1] * 120)
-    (0.154, (-0.066, 0.539))
+    (0.153, (-0.065, 0.541))
     """
 
     for values in (proportion_1, proportion_2):
         if not np.isin(np.asarray(values), [0, 1]).all():
             raise ValueError("Proportion test requires binary (0/1) values per unit")
 
-    pvalue = test_proportions_2indep(
-        np.sum(proportion_2), 
-        len(proportion_2), 
-        np.sum(proportion_1), 
-        len(proportion_1), 
-        compare='diff'
-    ).pvalue
+    count_1, nobs_1 = np.sum(proportion_1), len(proportion_1)
+    count_2, nobs_2 = np.sum(proportion_2), len(proportion_2)
+    if count_1 + count_2 in (0, nobs_1 + nobs_2):
+        return np.nan, (np.nan, np.nan)
 
-    confint = confint_proportions_2indep(
-        np.sum(proportion_2), 
-        len(proportion_2), 
-        np.sum(proportion_1), 
-        len(proportion_1), 
-        compare='ratio' if uplift_type=='rel' else 'diff',
-        alpha=confint_alpha
-    )
+    compare = 'ratio' if uplift_type == 'rel' else 'diff'
+    quantile = scipy.stats.norm.ppf(1 - confint_alpha / 2)
 
-    if uplift_type=='rel':
-        confint = tuple([bound - 1 for bound in confint])
-            
+    def statistic(value):
+        # The search reaches the limits of the parameter, where the statistic is infinite
+        with np.errstate(divide='ignore', invalid='ignore'):
+            return score_test_proportions_2indep(count_2, nobs_2, count_1, nobs_1, value=value, compare=compare).statistic
+
+    pvalue = 2 * scipy.stats.norm.sf(abs(statistic(1 if compare == 'ratio' else 0)))
+
+    p_1, p_2 = count_1 / nobs_1, count_2 / nobs_2
+    if compare == 'diff':
+        step = np.sqrt(p_1 * (1 - p_1) / nobs_1 + p_2 * (1 - p_2) / nobs_2) + 1 / (nobs_1 + nobs_2)
+        confint = _invert_test(lambda d: quantile - abs(statistic(d)), p_2 - p_1, step, limits=(-1, 1))
+    else:
+        # The ratio is searched on the log scale from a smoothed estimate, which is finite for zero counts
+        estimate = np.log((count_2 + 0.5) / (nobs_2 + 1)) - np.log((count_1 + 0.5) / (nobs_1 + 1))
+        step = np.sqrt(1 / (count_1 + 0.5) + 1 / (count_2 + 0.5))
+        bounds = _invert_test(lambda t: quantile - abs(statistic(np.exp(t))), estimate, step, limits=(-700, 700))
+        # Without successes in a group the ratio is not bounded on that side
+        low = 0 if count_2 == 0 or bounds[0] == -700 else np.exp(bounds[0])
+        upp = np.inf if count_1 == 0 or bounds[1] == 700 else np.exp(bounds[1])
+        confint = (low - 1, upp - 1)
+
     return pvalue, confint
 
 
@@ -287,7 +330,7 @@ def calc_stattest_bootstrap(metric_1, weights_1, metric_2, weights_2, uplift_typ
 
     This function implements a weighted bootstrap procedure to assess statistical
     significance and uncertainty in the difference (or relative uplift) between
-    two groups. It supports weighting of observations and is robust to non-normality.
+    two groups. It supports weighting of observations.
 
     Parameters
     ----------
@@ -313,7 +356,7 @@ def calc_stattest_bootstrap(metric_1, weights_1, metric_2, weights_2, uplift_typ
     Returns
     -------
     pvalue : float
-        Two-sided bootstrap p-value based on empirical distribution of uplift.
+        Two-sided bootstrap p-value of the uplift.
     confint : tuple of float
         Confidence interval (lower, upper) for the uplift.
 
@@ -323,7 +366,15 @@ def calc_stattest_bootstrap(metric_1, weights_1, metric_2, weights_2, uplift_typ
       Draws are generated in chunks, so memory does not grow with `n_bootstrap`.
     - The metric is aggregated using weighted average: sum(metric * weight) / sum(weights)
     - Relative uplift is computed as (treatment / control - 1).
-    - p-value is computed as double the minimum tail probability (two-sided test).
+    - The test of the difference of means is symmetric: the p-value is (k + 1) / (n_bootstrap + 1),
+      where k draws deviate from the observed difference by at least its absolute value.
+      The percentile test (double the share of negative deltas) assumed a symmetric distribution and
+      gave an A/A false positive rate of 6-7% on lognormal(0, 1.5) data with 100-1000 units per group,
+      the same symmetric test of the relative uplift 6.5%, of the difference 3.3-5.5%.
+    - The interval contains the uplifts not rejected by this test: for the absolute uplift it is the
+      observed difference plus or minus a quantile of the deviations, for the relative uplift u
+      the test of mean_2 - (1 + u) * mean_1 is inverted as in Fieller's interval, so it can be
+      asymmetric or infinite. The interval excludes zero exactly when the p-value is below `confint_alpha`.
 
     Example
     -------
@@ -342,18 +393,31 @@ def calc_stattest_bootstrap(metric_1, weights_1, metric_2, weights_2, uplift_typ
     means_1 = _poisson_bootstrap_means(np_metric_1, np_weights_1, n_bootstrap, rng)
     means_2 = _poisson_bootstrap_means(np_metric_2, np_weights_2, n_bootstrap, rng)
 
-    deltas = means_2 - means_1
+    mean_1 = np.sum(np_metric_1 * np_weights_1) / np.sum(np_weights_1)
+    mean_2 = np.sum(np_metric_2 * np_weights_2) / np.sum(np_weights_2)
+    errors_1, errors_2 = means_1 - mean_1, means_2 - mean_2
+    pvalue = (np.sum(np.abs(errors_2 - errors_1) >= abs(mean_2 - mean_1)) + 1) / (n_bootstrap + 1)
 
-    positions = np.sum(deltas < 0)
-    pvalue = 2 * np.minimum(positions, n_bootstrap - positions) / n_bootstrap
+    # The p-value is below confint_alpha when at most n_extreme deviations are not smaller than the observed one
+    n_extreme = int(np.ceil(confint_alpha * (n_bootstrap + 1) - 1e-9)) - 2
+    if n_extreme < 0:
+        return pvalue, (-np.inf, np.inf)
+    rank = n_bootstrap - n_extreme - 1
 
-    if uplift_type=='rel':
-        deltas = means_2 / means_1 - 1
+    def margin(scale):
+        # Non-negative while the hypothesis mean_2 = scale * mean_1 is not rejected
+        deviations = np.abs(errors_2 - scale * errors_1)
+        return np.partition(deviations, rank)[rank] - abs(mean_2 - scale * mean_1)
 
-    ci_low = np.quantile(a=deltas, q=confint_alpha / 2)
-    ci_upp = np.quantile(a=deltas, q=1 - confint_alpha / 2)
+    if uplift_type == 'abs':
+        half_width = np.partition(np.abs(errors_2 - errors_1), rank)[rank]
+        return pvalue, (mean_2 - mean_1 - half_width, mean_2 - mean_1 + half_width)
 
-    return pvalue, (ci_low, ci_upp)
+    if mean_1 == 0:
+        return pvalue, (np.nan, np.nan)
+    observed = mean_2 / mean_1
+    low, upp = _invert_test(margin, observed, max(np.std(means_2 / means_1), 1e-12 * max(abs(observed), 1)))
+    return pvalue, (low - 1, upp - 1)
 
 def calc_stattest(mean_1=None, std_1=None, nobs_1=None, weights_1=None, metric_1=None,
                   mean_2=None, std_2=None, nobs_2=None, weights_2=None, metric_2=None,

@@ -40,3 +40,8 @@ def test_precomputed_zero_rho_is_used():
     num, den = np.array([0, 5, 0, 5]), np.array([5, 5, 5, 5])
     assert calc_intra_corr_coef(num, den) > 0.5
     assert np.array_equal(calc_weights(num, den, 'intra_corr', intra_corr_coef=0.0), den)
+
+
+def test_intra_corr_warns_for_non_binary_numerator():
+    with pytest.warns(UserWarning, match='binary events'):
+        calc_intra_corr_coef(np.array([0, 7, 1]), np.array([5, 5, 5]))

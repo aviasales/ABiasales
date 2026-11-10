@@ -170,3 +170,42 @@ def test_variance_reduction_of_ratio_reduces_std(ratio_df, rng, config, covariat
     cuped = calc_groups_stats(a, b, 'clicks', 'views', var_reduction_method='cuped',
                               var_reduction_covariates=covariates, **config)
     assert cuped[1] < 0.9 * raw[1] and cuped[5] < 0.9 * raw[5]
+
+
+def test_stratified_mean_with_size_weights_is_ratio_of_sums(ratio_df):
+    # Regression: strata were weighted by user shares, so the stratified CTR changed the estimand
+    ratio_df['w'] = ratio_df['views']
+    mean, _ = calc_mean_and_std(ratio_df, 'clicks', 'views', 'w', use_stratification=True, strats_cols=['platform'])
+    assert mean == pytest.approx(ratio_df['clicks'].sum() / ratio_df['views'].sum())
+
+
+def test_stratified_std_uses_shares_of_strata_in_the_group(rng):
+    # Regression: sum(w_s * std_s^2) assumes that strata shares in the group equal their weights,
+    # which underestimated the variance for different splits by strata
+    df = pd.DataFrame({'m': rng.normal(size=1000), 's': np.where(np.arange(1000) < 700, 'x', 'y')})
+    df.loc[df['s'] == 'y', 'm'] *= 3
+    weights = {('x',): 0.3, ('y',): 0.7}
+    _, std = calc_mean_and_std(df, 'm', use_stratification=True, strats_cols=['s'], strats_weights=weights)
+    groups = df.groupby('s')['m']
+    se2 = sum(weights[(s,)] ** 2 * g.var(ddof=1) / len(g) for s, g in groups)
+    assert std / np.sqrt(len(df)) == pytest.approx(np.sqrt(se2))
+
+
+def test_groups_stats_linearization_equals_delta_for_different_denominators(ratio_df):
+    # Regression: both groups were scaled by the control mean denominator, so more views in the
+    # treatment group (+20%) shifted the uplift of the linearized metric from 5.5% to 6.5%
+    df_a, df_b = ratio_df[ratio_df['g'] == 'A'], ratio_df[ratio_df['g'] == 'B'].copy()
+    df_b['views'] = (df_b['views'] * 1.2).round().astype(int)
+    lin = calc_groups_stats(df_a, df_b, 'clicks', 'views', apply_linearization=True)
+    delta = calc_groups_stats(df_a, df_b, 'clicks', 'views', weight_method='size', use_delta_method=True)
+    assert lin[0] == pytest.approx(delta[0]) and lin[4] == pytest.approx(delta[4])
+
+
+def test_small_strata_are_merged_in_group_stats_and_pipeline(rng):
+    df = make_ratio_df(rng, n=2000)
+    df['s'] = rng.integers(0, 300, len(df))
+    df_a, df_b = df[df['g'] == 'A'], df[df['g'] == 'B']
+    with pytest.warns(UserWarning, match='merged'):
+        calc_groups_stats(df_a, df_b, 'clicks', 'views', use_stratification=True, strats_cols=['s'])
+    with pytest.warns(UserWarning, match='merged'):
+        calc_pipeline_mean_and_std(df, 'clicks', 'views', use_stratification=True, strats_cols=['s'])

@@ -38,6 +38,8 @@ DELTA = {'den': 'd', 'weight_method': 'size', 'use_delta_method': True}
     ({'stat_method': 'bootstrap', **STRAT}, 'Bootstrap ignores'),
     ({**DELTA, 'stat_method': 'bootstrap'}, 'Delta Method std'),
     ({'use_stratification': True}, 'strats_cols'),
+    ({'den': 'd', 'weight_method': 'size', 'apply_linearization': True}, "requires weight_method='uniform'"),
+    ({'stat_method': 'proportion', 'handle_outliers': 'cap'}, 'Capping a binary metric'),
 ])
 def test_check_exp_params_rejects_invalid(config, match):
     with pytest.raises(ValueError, match=match):
@@ -98,7 +100,8 @@ def test_metric_config_overrides_stratification(value_df, monkeypatch):
     orig = results.calc_groups_stats
     monkeypatch.setattr(results, 'calc_groups_stats', spy)
     calc_exp_stattest(value_df, 'g', 'A', 'B', {'num': 'value', 'use_stratification': True, 'strats_cols': ['platform']})
-    assert seen['use_stratification'] is True and seen['strats_cols'] == ['platform']
+    # Strata are passed as labels of 'platform' values
+    assert seen['use_stratification'] is True and len(seen['strats_weights']) == value_df['platform'].nunique()
 
 
 def test_remove_outliers_defaults_to_metric_columns(value_df, monkeypatch):
@@ -204,3 +207,23 @@ def test_calc_exp_results_bootstrap_is_reproducible(value_df):
     first = calc_exp_results(value_df, 'g', **kwargs)
     second = calc_exp_results(value_df, 'g', **kwargs)
     assert first['confint'].iloc[0] == second['confint'].iloc[0]
+
+
+def test_outliers_are_handled_on_all_groups(rng):
+    # Regression: outliers were found per pair, so the control group had different means in different pairs
+    df = make_value_df(rng, groups=('A', 'B', 'C'))
+    df.loc[df['g'] == 'C', 'value'] *= 3
+    config = {'num': 'value', 'handle_outliers': 'remove', 'outliers_contamination': 0.05}
+    res = calc_exp_results(df, 'g', {'v': config}, display_colored_results=False)
+    assert res.loc[res['group_1'] == 'A', 'mean_1'].nunique() == 1
+
+
+@pytest.mark.filterwarnings('ignore::RuntimeWarning')
+def test_failed_pvalues_are_excluded_from_correction(rng):
+    # Regression: a NaN p-value made the correction return NaN for all metrics
+    df = make_value_df(rng, uplift=0.2)
+    df['zero'] = 0.0
+    with pytest.warns(UserWarning, match='NaN'):
+        res = calc_exp_results(df, 'g', {'v': {'num': 'value'}, 'zero': {'num': 'zero'}}, display_colored_results=False)
+    assert res['pvalue'].iloc[0] == res['pvalue_init'].iloc[0] < 0.05
+    assert np.isnan(res['pvalue'].iloc[1])

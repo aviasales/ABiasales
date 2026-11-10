@@ -21,12 +21,13 @@ def test_construct_exp_configs_generates_only_valid_configs():
 
 
 def test_construct_exp_configs_uses_check_exp_params():
-    configs = construct_exp_configs('clicks', 'views', weight_methods=['size'], apply_linearization=[False, True],
+    configs = construct_exp_configs('clicks', 'views', weight_methods=['uniform', 'size'], apply_linearization=[False, True],
                                     use_delta_method=[False, True], stat_methods=['z_test', 'bootstrap'])
-    combos = {(c['apply_linearization'], c['use_delta_method'], c['stat_method']) for c in configs}
-    assert (True, False, 'bootstrap') in combos  # valid, was skipped before
-    assert (False, True, 'z_test') in combos  # valid, was skipped before
-    assert (False, True, 'bootstrap') not in combos  # bootstrap ignores the Delta Method std
+    combos = {(c['weight_method'], c['apply_linearization'], c['use_delta_method'], c['stat_method']) for c in configs}
+    assert ('uniform', True, False, 'bootstrap') in combos  # valid, was skipped before
+    assert ('size', False, True, 'z_test') in combos  # valid, was skipped before
+    assert ('size', False, True, 'bootstrap') not in combos  # bootstrap ignores the Delta Method std
+    assert ('size', True, False, 'z_test') not in combos  # linearization requires uniform weights
 
 
 def test_construct_exp_configs_has_no_duplicates():
@@ -60,11 +61,22 @@ def test_aa_simulation_handles_outliers_once(value_df, monkeypatch):
     assert {'fpr', 'fpr_valid', 'fpr-pvalue_auc'} <= set(res.columns)
 
 
-def test_ab_simulation_keeps_zero_pvalues(value_df):
+def test_ab_simulation_keeps_zero_pvalues(value_df, monkeypatch):
     # Regression: p-value = 0 was dropped, which underestimated power
-    configs = construct_exp_configs('value', stat_methods=['bootstrap'])
-    res = run_ab_test_simulation(value_df, configs, control_sample_size=1000, n_exp=10, uplift=1.0, n_bootstrap=100)
+    monkeypatch.setattr(simulation, 'calc_exp_stattest', lambda *args, **kwargs: pd.DataFrame({'pvalue': [0.0]}))
+    res = run_ab_test_simulation(value_df, construct_exp_configs('value'), control_sample_size=100, n_exp=10)
     assert res['power'].iloc[0] == 1.0
+
+
+def test_simulations_report_failed_experiments(value_df, monkeypatch):
+    pvalues = iter([np.nan, 0.5, np.nan, np.nan])
+    monkeypatch.setattr(simulation, 'calc_exp_stattest', lambda *args, **kwargs: pd.DataFrame({'pvalue': [next(pvalues)]}))
+    with pytest.warns(UserWarning, match='1 of 2 experiments have no p-value'):
+        res = run_ab_test_simulation(value_df, construct_exp_configs('value'), control_sample_size=100, n_exp=2)
+    assert res['power'].iloc[0] == 0
+    with pytest.warns(UserWarning, match='2 of 2'):
+        res = run_aa_test_simulation(value_df, construct_exp_configs('value'), control_sample_size=100, n_exp=2)
+    assert np.isnan(res['fpr'].iloc[0]) and not res['fpr_valid'].iloc[0]
 
 
 def test_aa_simulation_for_ratio_metric(ratio_df):

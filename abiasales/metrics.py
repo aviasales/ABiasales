@@ -4,7 +4,7 @@ import pandas as pd
 from .stats import weighted_mean, calc_std, calc_linearization_coef
 from .weights import calc_weights, calc_intra_corr_coef
 from .variance_reduction import apply_variance_reduction, apply_exp_variance_reduction
-from .stratification import get_strats_indexes, calc_strats_weights, as_list
+from .stratification import get_strats_indexes, calc_strats_weights, stratum_labels, as_list
 
 def select_columns(df, *cols, rows=None):
     """
@@ -96,14 +96,16 @@ def calc_mean_and_std(df,
     strats_cols : list of str, optional
         Columns defining strata. Required if use_stratification=True.
     strats_weights : dict, optional
-        Optional precomputed stratum weights.
+        Optional precomputed stratum weights. By default they are shares of the unit weight
+        `metric_weight` in strata, see `calc_strats_weights`.
 
     Returns
     -------
     mean : float
         Mean of the metric (stratified or total).
     std : float
-        Standard deviation of the metric (stratified or total).
+        Standard deviation of the metric (stratified or total), such that `std / sqrt(len(df))`
+        is the standard error of the mean.
     """
     num = np.asarray(df[metric_num])
     if metric_den:
@@ -118,7 +120,7 @@ def calc_mean_and_std(df,
 
     if use_stratification:
         if strats_weights is None:
-            strats_weights = calc_strats_weights(df, strats_cols)
+            strats_weights = calc_strats_weights(df, strats_cols, weights)
 
         strats_indexes = get_strats_indexes(df, strats_cols)
 
@@ -126,11 +128,11 @@ def calc_mean_and_std(df,
         total_var = 0
         total_weight = 0
 
-        for s in strats_indexes:
+        for s, idx in strats_indexes.items():
 
-            strata_num = num[strats_indexes[s]]
-            strata_den = den[strats_indexes[s]]
-            strata_weights = weights[strats_indexes[s]]
+            strata_num = num[idx]
+            strata_den = den[idx]
+            strata_weights = weights[idx]
 
             strata_mean = weighted_mean(strata_num / strata_den, strata_weights)
             strata_std = calc_std(strata_num, strata_den, strata_weights, use_delta_method)
@@ -139,7 +141,10 @@ def calc_mean_and_std(df,
                 continue
 
             total_mean += strats_weights[s] * strata_mean
-            total_var += strats_weights[s] * strata_std ** 2
+            # Variance of the stratified mean is sum(w_s^2 * std_s^2 / n_s). The shorter sum(w_s * std_s^2) / n
+            # assumes that shares of strata in the group equal their weights, which fails e.g. for
+            # different splits by strata (A/A false positive rate of 7.5% for a 70/30 and 30/70 split)
+            total_var += strats_weights[s] ** 2 * strata_std ** 2 / len(idx)
             total_weight += strats_weights[s]
 
         # Strata missing in the group would bias the mean towards zero, so weights are renormalized
@@ -149,7 +154,7 @@ def calc_mean_and_std(df,
                 "stratum weights are renormalized"
             )
 
-        return total_mean / total_weight, np.sqrt(total_var / total_weight)
+        return total_mean / total_weight, np.sqrt(len(df) * total_var) / total_weight
 
     else:
         mean = weighted_mean(num / den, weights)
@@ -195,6 +200,7 @@ def calc_pipeline_mean_and_std(df,
     strats_cols : list of str, optional
         Columns defining strata. Required if use_stratification=True.
         With stratification, variance reduction models are also fitted per stratum.
+        Strata with fewer than `stratification.MIN_STRATUM_SIZE` units are merged into one.
     var_reduction_method : str or None, optional
         Method for variance reduction, e.g., 'cuped', 'cupac'.
     var_reduction_covariates : list of str, optional
@@ -237,6 +243,12 @@ def calc_pipeline_mean_and_std(df,
         df_out[metric_num_new] = df_out[metric_num] - lin_k * df_out[metric_den]
 
     den_col = None if apply_linearization else metric_den
+
+    # STRATA
+    if use_stratification:
+        stratum_col = _free_column_name(df_out, 'stratum')
+        df_out[stratum_col] = stratum_labels(df_out, strats_cols)
+        strats_cols = [stratum_col]
 
     # VARIANCE REDUCTION
     if var_reduction_method:
@@ -301,7 +313,9 @@ def calc_groups_stats(df_control,
         Method to compute observation weights ('uniform', 'size', 'sqrt', 'intra_corr').
     apply_linearization : bool
         Whether to apply linearization to ratios. The linearized metric is
-        expressed in ratio units of control: (num - k * den) / mean(den_control) + k.
+        expressed in ratio units: (num - k * den) / mean(den) + k, where k is the ratio
+        of control and mean(den) is the mean denominator of the group, so that the
+        mean of the linearized metric is the ratio of the group.
     use_delta_method : bool
         Whether to use Delta Method for std calculation.
     use_stratification : bool
@@ -309,6 +323,8 @@ def calc_groups_stats(df_control,
     strats_cols : list of str or None
         Columns defining strata (required if stratification is used).
         With stratification, variance reduction models are also fitted per stratum.
+        Without `strats_weights`, strata with fewer than `stratification.MIN_STRATUM_SIZE`
+        expected units in the smaller group are merged into one.
     var_reduction_method : str or None
         Method for variance reduction ('cuped', 'cupac').
     var_reduction_covariates : list of str or None
@@ -316,7 +332,8 @@ def calc_groups_stats(df_control,
     var_reduction_params : dict, optional
         Parameters of the CatBoost model for CUPAC.
     strats_weights : dict, optional
-        Precomputed stratum weights. By default they are computed on both groups.
+        Precomputed stratum weights for `strats_cols`, then strata are not merged. By default
+        they are shares of the unit weight in strata, computed on both groups.
 
     Returns
     -------
@@ -355,12 +372,23 @@ def calc_groups_stats(df_control,
             df_a[metric_den],
             df_a[weight_col]
         )
-        # Scale to the ratio units of control: otherwise control mean is 0 and relative uplift is undefined
-        mean_den_a = weighted_mean(df_a[metric_den], df_a[weight_col])
-        df_a[metric_num_new] = (df_a[metric_num] - lin_k * df_a[metric_den]) / mean_den_a + lin_k
-        df_b[metric_num_new] = (df_b[metric_num] - lin_k * df_b[metric_den]) / mean_den_a + lin_k
+        # Scale to ratio units: otherwise control mean is 0 and relative uplift is undefined.
+        # Each group is divided by its own mean denominator, so the mean is the ratio of the group:
+        # with the control one the uplift was multiplied by the change of the denominator
+        # (+20% views turned a CTR uplift of 5.4% into 6.5%)
+        for df_g in (df_a, df_b):
+            mean_den = weighted_mean(df_g[metric_den], df_g[weight_col])
+            df_g[metric_num_new] = (df_g[metric_num] - lin_k * df_g[metric_den]) / mean_den + lin_k
 
     den_col = None if apply_linearization else metric_den
+
+    # STRATA
+    if use_stratification and strats_weights is None:
+        stratum_col = _free_column_name(df_a, 'stratum')
+        labels = stratum_labels(pd.concat([df_a[strats_cols], df_b[strats_cols]]), strats_cols,
+                                groups=np.repeat([0, 1], [len(df_a), len(df_b)]))
+        df_a[stratum_col], df_b[stratum_col] = labels[:len(df_a)], labels[len(df_a):]
+        strats_cols = [stratum_col]
 
     # VARIANCE REDUCTION
     if var_reduction_method:
@@ -378,7 +406,8 @@ def calc_groups_stats(df_control,
     # SAMPLE STAT
 
     if use_stratification and strats_weights is None:
-        strats_weights = calc_strats_weights(pd.concat([df_a[strats_cols], df_b[strats_cols]]), strats_cols)
+        strats_weights = calc_strats_weights(pd.concat([df_a[strats_cols], df_b[strats_cols]]), strats_cols,
+                                             weights=np.concatenate([df_a[weight_col], df_b[weight_col]]))
 
     mean_a, std_a = calc_mean_and_std(
         df_a,

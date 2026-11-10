@@ -7,6 +7,16 @@ from .data_generation import generate_real_exp_data
 from .metrics import select_columns
 from .results import get_exp_params, check_exp_params, calc_exp_stattest, display_table
 
+def _valid_pvalues(pvalues, config):
+    # Drop failed experiments only: p-value = 0 is a valid (most significant) result
+    pvalues = np.asarray(pvalues, dtype=float)
+    failed = int(np.isnan(pvalues).sum())
+    if failed:
+        warnings.warn(f"{failed} of {len(pvalues)} experiments have no p-value and are skipped "
+                      f"for config {_config_description(config)}")
+    return pvalues[~np.isnan(pvalues)]
+
+
 def _is_useful_config(config):
     # Ratio options do not change a metric without denominator, such configs would be duplicates
     if not config['den'] and (config['apply_linearization'] or config['use_delta_method']
@@ -189,9 +199,10 @@ def run_aa_test_simulation(df,
 
                 pvalues.append(pvalue)
 
-        pvalues = np.asarray(pvalues)
-        # Drop failed experiments only: p-value = 0 is a valid (most significant) result
-        pvalues = pvalues[~np.isnan(pvalues)]
+        pvalues = _valid_pvalues(pvalues, config)
+        if not len(pvalues):
+            results.append({**_config_description(config), 'fpr': np.nan, 'fpr_valid': False, 'fpr-pvalue_auc': np.nan})
+            continue
 
         x = np.linspace(0, 1, len(pvalues))
 
@@ -301,10 +312,8 @@ def run_ab_test_simulation(df,
 
                 pvalues.append(pvalue)
 
-        pvalues = np.asarray(pvalues)
-        # Drop failed experiments only: p-value = 0 is a valid (most significant) result
-        pvalues = pvalues[~np.isnan(pvalues)]
-        power = np.mean(pvalues < alpha)
+        pvalues = _valid_pvalues(pvalues, config)
+        power = np.mean(pvalues < alpha) if len(pvalues) else np.nan
         results.append({**_config_description(config), 'power': power})
 
     results = pd.DataFrame(results)
