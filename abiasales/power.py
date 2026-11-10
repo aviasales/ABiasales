@@ -95,6 +95,8 @@ def calc_power_table(df,
     - Assumes two-sided testing.
     """
 
+    if mode not in ('sample_size', 'mde'):
+        raise ValueError("mode must be 'sample_size' or 'mde'")
     if effect not in ('additive', 'multiplicative'):
         raise ValueError("effect must be 'additive' or 'multiplicative'")
     strats_cols = as_list(strats_cols)
@@ -168,7 +170,7 @@ def calc_power_table(df,
         results = pd.DataFrame(data_).pivot(index='Effect', columns=error_col, values='')
         results.index = [str(round(e * 100, 1)) + '%' for e in results.index]
 
-    elif mode == 'mde':
+    else:
         for a in alpha:
             for p in power:
                 for s in sample_size:
@@ -181,9 +183,6 @@ def calc_power_table(df,
 
         results = pd.DataFrame(data_).pivot(index='Sample size', columns=error_col, values='')
         results.index = [str(s) for s in results.index]
-
-    else:
-        raise ValueError("mode must be 'sample_size' or 'mde'")
 
     if return_power_list:
         return results, output_power_list

@@ -80,6 +80,32 @@ def _invert_test(margin, estimate, step, limits=(-np.inf, np.inf), n_iter=60):
     return tuple(bounds)
 
 
+def _score_statistic_diff(count_1, nobs_1, count_2, nobs_2, diff):
+    """
+    Returns the Miettinen-Nurminen score statistic of the hypothesis p_2 - p_1 = diff.
+
+    The proportions under the hypothesis maximize the likelihood, they are found with the
+    closed form of Farrington and Manning. statsmodels' `score_test_proportions_2indep`
+    with compare='diff' differs from the maximum of the likelihood away from diff = 0
+    (2.074 instead of 2.046 for 44 and 30 successes out of 200 at diff = 0.15) and is not
+    symmetric under swapping the groups.
+    """
+    p_1, p_2 = count_2 / nobs_2, count_1 / nobs_1  # the formula tests p_1 - p_2 = diff for these
+    theta = nobs_1 / nobs_2
+    a = 1 + theta
+    b = -(1 + theta + p_1 + theta * p_2 + diff * (theta + 2))
+    c = diff ** 2 + diff * (2 * p_1 + theta + 1) + p_1 + theta * p_2
+    d = -p_1 * diff * (1 + diff)
+    v = b ** 3 / (27 * a ** 3) - b * c / (6 * a ** 2) + d / (2 * a)
+    u = np.sign(v) * np.sqrt(max(b ** 2 / (9 * a ** 2) - c / (3 * a), 0))
+    w = (np.pi + np.arccos(np.clip(v / u ** 3, -1, 1))) / 3 if u != 0 else 0
+    q_1 = 2 * u * np.cos(w) - b / (3 * a)
+    q_2 = q_1 - diff
+    n = nobs_1 + nobs_2
+    var = (q_1 * (1 - q_1) / nobs_2 + q_2 * (1 - q_2) / nobs_1) * n / (n - 1)
+    return (p_1 - p_2 - diff) / np.sqrt(var)
+
+
 def calc_stattest_proportion_test(proportion_1, proportion_2, uplift_type='rel', confint_alpha=0.05):
     """
     Performs a two-sample Z-test for binary proportion data and returns p-value and confidence interval.
@@ -108,11 +134,12 @@ def calc_stattest_proportion_test(proportion_1, proportion_2, uplift_type='rel',
 
     Notes
     -----
-    - Uses the score test of `statsmodels.stats.proportion.score_test_proportions_2indep`
-      (Miettinen-Nurminen) for the difference or the ratio of proportions. The interval contains
-      the differences or ratios it does not reject, so it excludes zero exactly when the p-value is
-      below `confint_alpha`. The default tests and intervals of statsmodels disagreed in 0.4% of cases,
-      and its score interval fails to bracket the bounds of the difference for ~2% of samples.
+    - Uses the Miettinen-Nurminen score test of the difference or the ratio of proportions
+      (`statsmodels.stats.proportion.score_test_proportions_2indep` for the ratio, `_score_statistic_diff`
+      for the difference). The interval contains the differences or ratios the test does not reject,
+      so it excludes zero exactly when the p-value is below `confint_alpha`. The default tests and
+      intervals of statsmodels disagreed in 0.4% of cases, and its score interval of the difference
+      fails to bracket the bounds for ~2% of samples.
     - When reporting relative uplift, the confidence bounds are adjusted to match the (p2/p1 - 1) scale.
 
     Example
@@ -136,6 +163,8 @@ def calc_stattest_proportion_test(proportion_1, proportion_2, uplift_type='rel',
     def statistic(value):
         # The search reaches the limits of the parameter, where the statistic is infinite
         with np.errstate(divide='ignore', invalid='ignore'):
+            if compare == 'diff':
+                return _score_statistic_diff(count_1, nobs_1, count_2, nobs_2, value)
             return score_test_proportions_2indep(count_2, nobs_2, count_1, nobs_1, value=value, compare=compare).statistic
 
     pvalue = 2 * scipy.stats.norm.sf(abs(statistic(1 if compare == 'ratio' else 0)))

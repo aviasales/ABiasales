@@ -12,6 +12,7 @@ def test_sample_size_matches_statsmodels(value_df):
     expected = [int(np.ceil(tt_ind_solve_power(effect_size=mean * u / std, alpha=0.05, power=0.8, ratio=1)))
                 for u in [0.02, 0.05]]
     assert sizes == expected
+    assert list(table.index) == ['2.0%', '5.0%']
     # With a multiplicative effect the treatment std is (1 + u) * std, so both groups have sqrt((1 + (1 + u)^2) / 2) * std
     _, sizes = calc_power_table(value_df, 'value', uplift=[0.02, 0.05], effect='multiplicative', return_power_list=True)
     expected = [int(np.ceil(tt_ind_solve_power(effect_size=mean * u / (std * np.sqrt((1 + (1 + u) ** 2) / 2)),
@@ -20,7 +21,15 @@ def test_sample_size_matches_statsmodels(value_df):
     assert sizes == expected
     with pytest.raises(ValueError, match='effect'):
         calc_power_table(value_df, 'value', effect='shift')
-    assert list(table.index) == ['2.0%', '5.0%']
+    with pytest.raises(ValueError, match='mode'):
+        calc_power_table(value_df, 'value', mode='power')
+
+
+def test_multiplicative_mde_is_infinite_when_noise_grows_faster(value_df):
+    # The treatment std grows with the uplift, so for tiny samples no uplift is detectable
+    _, (mde,) = calc_power_table(value_df, 'value', mode='mde', sample_size=[2], effect='multiplicative',
+                                 return_power_list=True)
+    assert mde == np.inf
 
 
 def test_mde_is_inverse_of_sample_size(value_df):

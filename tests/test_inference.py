@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+import scipy.optimize
 import scipy.stats
 from statsmodels.stats.proportion import confint_proportions_2indep, test_proportions_2indep as sm_proportions_test
 
@@ -53,11 +54,40 @@ def test_rel_confint_contains_uplift():
 
 def test_proportion_test_matches_statsmodels():
     a, b = [0] * 900 + [1] * 100, [0] * 880 + [1] * 120
-    for uplift_type, compare, shift in [('rel', 'ratio', 1), ('abs', 'diff', 0)]:
-        pvalue, confint = calc_stattest_proportion_test(a, b, uplift_type=uplift_type)
+    for uplift_type, compare in [('rel', 'ratio'), ('abs', 'diff')]:
+        pvalue, _ = calc_stattest_proportion_test(a, b, uplift_type=uplift_type)
         assert pvalue == pytest.approx(sm_proportions_test(120, 1000, 100, 1000, method='score', compare=compare).pvalue)
-        expected = confint_proportions_2indep(120, 1000, 100, 1000, method='score', compare=compare)
-        np.testing.assert_allclose(confint, np.array(expected) - shift, rtol=1e-6)
+    _, confint = calc_stattest_proportion_test(a, b, uplift_type='rel')
+    np.testing.assert_allclose(confint, np.array(confint_proportions_2indep(120, 1000, 100, 1000, method='score',
+                                                                           compare='ratio')) - 1, rtol=1e-6)
+
+
+def _score_statistic_by_likelihood(count_1, nobs_1, count_2, nobs_2, diff):
+    # Miettinen-Nurminen statistic of p_2 - p_1 = diff with the proportions maximizing the likelihood numerically
+    def nll(p_1):
+        p_2 = p_1 + diff
+        return -(count_1 * np.log(p_1) + (nobs_1 - count_1) * np.log(1 - p_1)
+                 + count_2 * np.log(p_2) + (nobs_2 - count_2) * np.log(1 - p_2))
+    bounds = (max(0, -diff) + 1e-12, min(1, 1 - diff) - 1e-12)
+    p_1 = scipy.optimize.minimize_scalar(nll, bounds=bounds, method='bounded', options={'xatol': 1e-14}).x
+    p_2 = p_1 + diff
+    n = nobs_1 + nobs_2
+    var = (p_1 * (1 - p_1) / nobs_1 + p_2 * (1 - p_2) / nobs_2) * n / (n - 1)
+    return (count_2 / nobs_2 - count_1 / nobs_1 - diff) / np.sqrt(var)
+
+
+@pytest.mark.parametrize('counts', [(100, 1000, 120, 1000), (30, 200, 44, 200), (4, 10000, 2, 1000)])
+def test_proportion_abs_confint_inverts_the_score_test(counts):
+    # Regression: the statsmodels score statistic of the difference is not the maximum likelihood one
+    # away from zero (2.074 instead of 2.046), so its interval was shifted and depended on the order of groups
+    count_1, nobs_1, count_2, nobs_2 = counts
+    a, b = [0] * (nobs_1 - count_1) + [1] * count_1, [0] * (nobs_2 - count_2) + [1] * count_2
+    _, (low, up) = calc_stattest_proportion_test(a, b, uplift_type='abs')
+    quantile = scipy.stats.norm.ppf(0.975)
+    assert _score_statistic_by_likelihood(*counts, low) == pytest.approx(quantile, rel=1e-6)
+    assert _score_statistic_by_likelihood(*counts, up) == pytest.approx(-quantile, rel=1e-6)
+    _, (low_swapped, up_swapped) = calc_stattest_proportion_test(b, a, uplift_type='abs')
+    assert (low_swapped, up_swapped) == pytest.approx((-up, -low))
 
 
 def test_proportion_confint_agrees_with_pvalue(rng):
@@ -168,3 +198,17 @@ def test_bootstrap_relative_confint_inverts_the_test(rng):
     for u in [low - 0.01, up + 0.01]:
         p, _ = calc_stattest_bootstrap(a, None, b / (1 + u), None, 'abs', random_state=0)
         assert p < 0.05
+
+
+
+def test_bootstrap_relative_confint_is_infinite_for_control_mean_near_zero(rng):
+    # As Fieller's interval: the ratio is not bounded if the control mean is not distinguishable from zero
+    a, b = rng.normal(0.01, 1, 50), rng.normal(0.5, 1, 50)
+    _, (low, up) = calc_stattest_bootstrap(a, None, b, None, 'rel', random_state=0)
+    assert (low, up) == (-np.inf, np.inf)
+
+
+def test_proportion_test_without_variation_is_nan():
+    for values in ([0] * 10, [1] * 10):
+        pvalue, (low, up) = calc_stattest_proportion_test(values, values)
+        assert np.isnan(pvalue) and np.isnan(low) and np.isnan(up)
