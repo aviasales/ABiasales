@@ -82,3 +82,11 @@ def test_cuped_on_test_data_keeps_the_effect():
     cuped_uplift = calc_exp_stattest(df, 'g', 'A', 'B', cuped)['uplift'].iloc[0]
     assert cuped_uplift == pytest.approx(plain_uplift, abs=0.01)
     assert cuped_uplift == pytest.approx(0.1, abs=0.03)
+
+
+@pytest.mark.parametrize('metric_type', ['value', 'ratio'])
+def test_uplift_for_integer_metric(source, metric_type):
+    # Regression: injecting float noise into an integer column raised TypeError in pandas 3
+    source['clicks'] = np.random.poisson(3, len(source))
+    out = generate_real_exp_data(source, 'clicks', 'den', metric_type=metric_type, sample_size=50000, uplift=0.1)
+    assert out['clicks'].mean() / source['clicks'].mean() - 1 == pytest.approx(0.1, abs=0.03)

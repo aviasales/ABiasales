@@ -240,6 +240,8 @@ def generate_real_exp_data(df,
     # Case 4: Continuous metric (ratio) for tests
     if metric_type in ['ratio']:
         df_out = df.sample(n=sample_size, replace=True).reset_index(drop=True)
+        # Noise is not integer, and pandas does not upcast an integer column on partial assignment
+        df_out[metric_num] = df_out[metric_num].astype(float)
 
         ind = df_out[df_out[metric_num] != 0].index
         inj_mean = df_out.loc[ind, metric_num].mean() * uplift
