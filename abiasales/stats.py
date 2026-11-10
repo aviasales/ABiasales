@@ -161,7 +161,8 @@ def calc_std(num, den=None, weights=None, use_delta_method=False):
     if use_delta_method:
         return calc_delta_method_std(num_np, den_np)
     else:
-        ratios = num_np / den_np
+        with np.errstate(divide='ignore', invalid='ignore'):  # invalid ratios are dropped below
+            ratios = num_np / den_np
         weights_ = weights_np[~np.isnan(ratios) & ~np.isinf(ratios)]
         ratios = ratios[~np.isnan(ratios) & ~np.isinf(ratios)]
         return weighted_mean_std(ratios, weights_)
