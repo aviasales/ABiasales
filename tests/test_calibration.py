@@ -136,18 +136,22 @@ def test_aa_false_positive_rate_hard_cases(name):
     assert FPR_BOUNDS[0] <= fpr <= FPR_BOUNDS[1], f'{name}: FPR = {fpr:.3f}'
 
 
-@pytest.mark.parametrize('control_perc', [0.5, 0.2])
-def test_power_table_predicts_power(control_perc):
-    # The treatment std grows with a multiplicative effect: without it the power was 73% instead of 80%
+@pytest.mark.parametrize('control_perc, effect', [(0.5, 'additive'), (0.5, 'multiplicative'), (0.2, 'multiplicative')])
+def test_power_table_predicts_power(control_perc, effect):
+    # A multiplicative effect scales the treatment std: the additive calculation gave 73% power instead of 80%
     rng = np.random.default_rng(3)
     _, (mde,) = calc_power_table(make_value_df(rng, n=200_000), 'value', mode='mde', sample_size=[1000],
-                                 control_perc=control_perc, return_power_list=True)
+                                 control_perc=control_perc, effect=effect, return_power_list=True)
     n_treatment = int(round(1000 * (1 - control_perc) / control_perc))
     pvalues = []
     for _ in range(N_EXP):
         df = make_value_df(rng, n=1000 + n_treatment)
         df['g'] = np.repeat(['A', 'B'], [1000, n_treatment])
-        df.loc[df['g'] == 'B', 'value'] *= 1 + mde
+        treatment = df['g'] == 'B'
+        if effect == 'additive':
+            df.loc[treatment, 'value'] += mde * df['value'].mean()
+        else:
+            df.loc[treatment, 'value'] *= 1 + mde
         pvalues.append(calc_exp_stattest(df, 'g', 'A', 'B', {'num': 'value'})['pvalue'].iloc[0])
     # 99.9% interval of the observed power for 300 experiments at 80%
     assert 0.72 <= np.mean(np.array(pvalues) < 0.05) <= 0.88

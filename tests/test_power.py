@@ -9,11 +9,17 @@ from abiasales.metrics import calc_pipeline_mean_and_std
 def test_sample_size_matches_statsmodels(value_df):
     table, sizes = calc_power_table(value_df, 'value', uplift=[0.02, 0.05], return_power_list=True)
     mean, std = calc_pipeline_mean_and_std(value_df, 'value')
-    # The treatment std is (1 + u) * std, so both groups have the std sqrt((1 + (1 + u)^2) / 2) * std
+    expected = [int(np.ceil(tt_ind_solve_power(effect_size=mean * u / std, alpha=0.05, power=0.8, ratio=1)))
+                for u in [0.02, 0.05]]
+    assert sizes == expected
+    # With a multiplicative effect the treatment std is (1 + u) * std, so both groups have sqrt((1 + (1 + u)^2) / 2) * std
+    _, sizes = calc_power_table(value_df, 'value', uplift=[0.02, 0.05], effect='multiplicative', return_power_list=True)
     expected = [int(np.ceil(tt_ind_solve_power(effect_size=mean * u / (std * np.sqrt((1 + (1 + u) ** 2) / 2)),
                                                alpha=0.05, power=0.8, ratio=1)))
                 for u in [0.02, 0.05]]
     assert sizes == expected
+    with pytest.raises(ValueError, match='effect'):
+        calc_power_table(value_df, 'value', effect='shift')
     assert list(table.index) == ['2.0%', '5.0%']
 
 
@@ -22,10 +28,10 @@ def test_mde_is_inverse_of_sample_size(value_df):
     _, mdes = calc_power_table(value_df, 'value', mode='mde', sample_size=sizes, return_power_list=True)
     assert mdes[0] == pytest.approx(0.03, rel=0.01)
     # The sample size is rounded up, so the uplift is between the MDEs of it and of one unit less
-    for control_perc in [0.2, 0.8]:
-        _, (n,) = calc_power_table(value_df, 'value', uplift=[0.2], control_perc=control_perc, return_power_list=True)
-        _, mdes = calc_power_table(value_df, 'value', mode='mde', sample_size=[n, n - 1], control_perc=control_perc,
-                                   return_power_list=True)
+    for control_perc, effect in [(0.2, 'additive'), (0.2, 'multiplicative'), (0.8, 'multiplicative')]:
+        kwargs = {'control_perc': control_perc, 'effect': effect, 'return_power_list': True}
+        _, (n,) = calc_power_table(value_df, 'value', uplift=[0.2], **kwargs)
+        _, mdes = calc_power_table(value_df, 'value', mode='mde', sample_size=[n, n - 1], **kwargs)
         assert mdes[0] <= 0.2 <= mdes[1]
 
 

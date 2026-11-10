@@ -22,7 +22,8 @@ def calc_power_table(df,
                      alpha=(0.05,), power=(0.8,),
                      uplift=(0.05,), sample_size=(1000,),
                      control_perc=0.5,
-                     return_power_list=False):
+                     return_power_list=False,
+                     effect='additive'):
     """
     Calculates sample size or minimum detectable effect (MDE) required for given statistical power.
 
@@ -69,6 +70,14 @@ def calc_power_table(df,
         Proportion of total sample allocated to control group (used to compute treatment size).
     return_power_list : bool, default=False
         Whether to return the list of values in addition to DataFrame.
+    effect : {'additive', 'multiplicative'}, default='additive'
+        How the treatment changes the metric:
+        - 'additive': the std of the treatment group equals the control one;
+        - 'multiplicative': every unit is scaled by (1 + uplift), so the treatment std is (1 + uplift)
+          times larger and the MDE solves a quadratic equation. For such an effect the additive
+          calculation planned 80% power at an MDE of 8.5% and gave 73%.
+        `simulation.run_ab_test_simulation` adds noise with std |uplift| * std to a value metric,
+        so the treatment std is sqrt(1 + uplift^2) times larger, close to the additive case.
 
     Returns
     -------
@@ -84,12 +93,10 @@ def calc_power_table(df,
     -----
     - Uses statsmodels' `tt_ind_solve_power` under the hood.
     - Assumes two-sided testing.
-    - The effect is assumed multiplicative: the treatment metric is (1 + uplift) times the control one,
-      so its std is (1 + uplift) times larger and the MDE solves a quadratic equation. With the control
-      std in both groups an experiment planned for 80% power at an MDE of 8.5% had 73% power.
-      For an additive effect the std does not change and the estimate is conservative.
     """
 
+    if effect not in ('additive', 'multiplicative'):
+        raise ValueError("effect must be 'additive' or 'multiplicative'")
     strats_cols = as_list(strats_cols)
     check_exp_params(get_exp_params({
         'num': metric_num, 'den': metric_den, 'weight_method': weight_method,
@@ -128,10 +135,14 @@ def calc_power_table(df,
 
     # Std of both groups that gives the standard error of the difference with the treatment std (1 + u) * std
     def effective_std(u):
+        if effect == 'additive':
+            return std
         return std * np.sqrt((1 + (1 + u) ** 2 / r) / (1 + 1 / r))
 
     # Uplift u with base * u = h * effective_std(u): a quadratic equation, no solution if the noise grows faster
     def solve_mde(h):
+        if effect == 'additive':
+            return h * std / base
         c = (h * std / base) ** 2 / (1 + 1 / r)
         a = 1 - c / r
         if a <= 0:

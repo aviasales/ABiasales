@@ -59,7 +59,8 @@ Notes on the methods:
   estimate keeps the ratio of sums. Strata with fewer than 10 expected units in the smallest group are merged
   into one stratum with a warning.
 - CUPED corrects the variance of the control group for the in-sample fit of its covariates.
-- `power.py` assumes a multiplicative effect: the treatment std is (1 + uplift) times the control one.
+- `power.py` assumes by default that the treatment does not change the std of the metric;
+  `effect='multiplicative'` scales the treatment std by (1 + uplift), which gives larger samples.
 - P-values that cannot be computed (e.g. a constant metric) are excluded from the multiple testing correction
   with a warning.
 
