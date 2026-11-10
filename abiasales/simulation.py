@@ -88,6 +88,11 @@ def _config_columns(df, config):
     return select_columns(df, config['num'], config['den'], config['strats_cols'],
                           config['var_reduction_covariates'], config['outliers_cols'])
 
+def _bootstrap_seed(config):
+    # Bootstrap is seeded from the global RNG, so simulations are reproducible with np.random.seed.
+    # Other methods do not draw a seed and keep the global RNG sequence unchanged
+    return np.random.randint(2**31) if config['stat_method'] == 'bootstrap' else None
+
 def _config_description(config):
     # Ratio options are shown only for ratio metrics
     description = {}
@@ -178,7 +183,8 @@ def run_aa_test_simulation(df,
                     group, 'exp_group', 'A1', 'A2', config,
                     use_stratification=config['use_stratification'],
                     strats_cols=config['strats_cols'],
-                    n_bootstrap=n_bootstrap
+                    n_bootstrap=n_bootstrap,
+                    random_state=_bootstrap_seed(config)
                 )['pvalue'].values[0]
 
                 pvalues.append(pvalue)
@@ -289,7 +295,8 @@ def run_ab_test_simulation(df,
                     df_exp, 'exp_group', 'A', 'B', config,
                     use_stratification=config['use_stratification'],
                     strats_cols=config['strats_cols'],
-                    n_bootstrap=n_bootstrap
+                    n_bootstrap=n_bootstrap,
+                    random_state=_bootstrap_seed(config)
                 )['pvalue'].values[0]
 
                 pvalues.append(pvalue)

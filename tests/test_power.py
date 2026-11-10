@@ -55,3 +55,15 @@ def test_variance_reduction_of_ratio_does_not_worsen_mde(ratio_df, weight_method
     _, cuped = calc_power_table(df, 'clicks', 'views', var_reduction_method='cuped',
                                 var_reduction_covariates=['views_cov'], **kwargs)
     assert cuped[0] <= raw[0] * 1.001
+
+
+@pytest.mark.parametrize('kwargs, message', [
+    (dict(weight_method='uniform', use_delta_method=True), "weight_method='size'"),
+    (dict(use_stratification=True), 'strats_cols'),
+    (dict(weight_method='sizee'), 'weight_method'),
+])
+def test_invalid_config_raises(ratio_df, kwargs, message):
+    # Regression: the Delta Method with uniform weights was accepted silently,
+    # stratification without strats_cols failed with a TypeError from groupby
+    with pytest.raises(ValueError, match=message):
+        calc_power_table(ratio_df, 'clicks', 'views', **kwargs)

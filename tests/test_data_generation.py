@@ -113,3 +113,10 @@ def test_uplift_for_integer_metric(source, metric_type):
     source['clicks'] = np.random.poisson(3, len(source))
     out = generate_real_exp_data(source, 'clicks', 'den', metric_type=metric_type, sample_size=50000, uplift=0.1)
     assert out['clicks'].mean() / source['clicks'].mean() - 1 == pytest.approx(0.1, abs=0.03)
+
+
+@pytest.mark.parametrize('metric_type', ['value', 'ratio'])
+def test_negative_uplift(source, metric_type):
+    # Regression: the std of the injected noise was negative and np.random.normal failed
+    out = generate_real_exp_data(source, 'value', 'den', metric_type=metric_type, sample_size=50000, uplift=-0.1)
+    assert out['value'].mean() / source['value'].mean() - 1 == pytest.approx(-0.1, abs=0.03)

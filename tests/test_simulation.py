@@ -84,3 +84,12 @@ def test_aa_simulation_flags_inflated_false_positive_rate(value_df, monkeypatch,
     res = run_aa_test_simulation(value_df, construct_exp_configs('value'), control_sample_size=100, n_exp=2000)
     assert bool(res['fpr_valid'].iloc[0]) is valid
     assert res['fpr'].iloc[0] == pytest.approx(2 * scipy.stats.norm.sf(1.96 / inflation), abs=0.015)
+
+
+def test_bootstrap_simulation_is_reproducible_with_global_seed(value_df):
+    configs = construct_exp_configs('value', stat_methods=['bootstrap'])
+    runs = []
+    for _ in range(2):
+        np.random.seed(5)
+        runs.append(run_aa_test_simulation(value_df, configs, control_sample_size=100, n_exp=5, n_bootstrap=50))
+    assert runs[0]['fpr-pvalue_auc'].iloc[0] == runs[1]['fpr-pvalue_auc'].iloc[0]

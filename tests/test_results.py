@@ -59,9 +59,10 @@ def test_calc_exp_results_all_pairs_and_correction(rng):
     assert (res['pvalue'] >= res['pvalue_init']).all()
 
 
-def test_calc_exp_results_single_comparison_has_no_correction(value_df):
+def test_calc_exp_results_single_comparison_has_same_columns(value_df):
+    # Regression: one comparison returned only 'pvalue', several 'pvalue_init' and 'pvalue'
     res = calc_exp_results(value_df, 'g', {'v': {'num': 'value'}}, display_colored_results=False)
-    assert 'pvalue_init' not in res.columns
+    assert res['pvalue'].iloc[0] == res['pvalue_init'].iloc[0]
 
 
 def test_calc_exp_results_prints_table_outside_ipython(value_df, capsys):
@@ -187,3 +188,19 @@ def test_var_reduction_params_are_passed_to_the_model(value_df, monkeypatch):
     calc_exp_stattest(value_df, 'g', 'A', 'B', {'num': 'value', 'var_reduction_method': 'cuped',
                                                 'var_reduction_covariates': ['cov'], 'var_reduction_params': {'depth': 3}})
     assert seen == [{'depth': 3}]
+
+
+def test_calc_exp_results_control_group(rng):
+    df = make_value_df(rng, groups=('new', 'old', 'other'))
+    res = calc_exp_results(df, 'g', {'v': {'num': 'value'}}, display_colored_results=False, control_group='old')
+    assert list(zip(res['group_1'], res['group_2'])) == [('old', 'new'), ('old', 'other')]
+    with pytest.raises(ValueError, match='missing'):
+        calc_exp_results(df, 'g', {'v': {'num': 'value'}}, display_colored_results=False, control_group='missing')
+
+
+def test_calc_exp_results_bootstrap_is_reproducible(value_df):
+    kwargs = dict(metrics={'v': {'num': 'value', 'stat_method': 'bootstrap'}}, display_colored_results=False,
+                  n_bootstrap=50, random_state=1)
+    first = calc_exp_results(value_df, 'g', **kwargs)
+    second = calc_exp_results(value_df, 'g', **kwargs)
+    assert first['confint'].iloc[0] == second['confint'].iloc[0]

@@ -6,11 +6,12 @@ from .weights import calc_weights, calc_intra_corr_coef
 from .variance_reduction import apply_variance_reduction, apply_exp_variance_reduction
 from .stratification import get_strats_indexes, calc_strats_weights, as_list
 
-def select_columns(df, *cols):
+def select_columns(df, *cols, rows=None):
     """
-    Returns a copy of the dataframe with only the given columns (None and lists are flattened).
+    Returns a copy of the dataframe with only the given columns (None and lists are flattened)
+    and, if `rows` (a boolean mask) is given, only the selected rows.
 
-    Copying only the columns used by the pipeline is much cheaper than
+    Copying only the columns and rows used by the pipeline is much cheaper than
     copying a wide dataframe.
     """
     names = []
@@ -23,7 +24,7 @@ def select_columns(df, *cols):
     if missing:
         raise KeyError(f"Columns are not found in the dataframe: {missing}")
 
-    return df[names].copy()
+    return df[names].copy() if rows is None else df.loc[rows, names]
 
 def valid_metric_mask(df, metric_num, metric_den=None):
     """

@@ -164,7 +164,7 @@ def resolve_exp_params(metric_dict, use_stratification=False, strats_cols=None):
 
 def calc_exp_stattest(df, exp_group_col, eg1, eg2, metric_dict,
                       use_stratification=False, strats_cols=None,
-                      confint_alpha=0.05, n_bootstrap=500, strats_weights=None):
+                      confint_alpha=0.05, n_bootstrap=500, strats_weights=None, random_state=None):
     """
     Computes the statistical results of a single A/B experiment, including
     uplift, confidence intervals, and p-value.
@@ -201,6 +201,8 @@ def calc_exp_stattest(df, exp_group_col, eg1, eg2, metric_dict,
     strats_weights : dict, optional
         Precomputed stratum weights, e.g. shared by all pairs of groups.
         By default they are computed on the two compared groups.
+    random_state : int, np.random.Generator or None, default=None
+        Seed of the bootstrap resampling.
 
     Returns
     -------
@@ -219,7 +221,7 @@ def calc_exp_stattest(df, exp_group_col, eg1, eg2, metric_dict,
     columns = [exp_group_col, params['num'], params['den'], params['strats_cols'],
                params['var_reduction_covariates'], params['outliers_cols']]
     mask = df[exp_group_col].isin([eg1, eg2]) & valid_metric_mask(df, params['num'], params['den'])
-    df_exp = select_columns(df, *columns)[mask]
+    df_exp = select_columns(df, *columns, rows=mask)
 
     if params['handle_outliers']=='remove':
         outliers_cols = params['outliers_cols'] or [c for c in (params['num'], params['den']) if c]
@@ -255,20 +257,21 @@ def calc_exp_stattest(df, exp_group_col, eg1, eg2, metric_dict,
         mean_1=mean_1, std_1=std_1, weights_1=weights_1, metric_1=ratios_1,
         mean_2=mean_2, std_2=std_2, weights_2=weights_2, metric_2=ratios_2,
         stat_method=params['stat_method'], uplift_type=params['uplift_type'],
-        confint_alpha=confint_alpha, n_bootstrap=n_bootstrap
+        confint_alpha=confint_alpha, n_bootstrap=n_bootstrap, random_state=random_state
     )
 
 def calc_exp_results(df, exp_group_col, metrics,
                      use_stratification=False, strats_cols=None,
                      confint_alpha=0.05, n_bootstrap=500,
                      multitest_correction_method='holm-sidak',
-                     display_colored_results=True, pvalue_threshold=0.05):
+                     display_colored_results=True, pvalue_threshold=0.05,
+                     control_group=None, random_state=None):
     """
     Computes statistical results (uplift, CI, p-value) for all pairs of experiment groups
     and specified metrics in a dataset.
 
     This function:
-    - Iterates over all unique pairs of experiment groups
+    - Iterates over all unique pairs of experiment groups, or over pairs with the control group
     - For each metric, runs pairwise comparison using `calc_exp_stattest`
     - Optionally applies stratification and multiple testing correction
     - Outputs styled and corrected results
@@ -290,7 +293,10 @@ def calc_exp_results(df, exp_group_col, metrics,
             - 'var_reduction_method': None, 'cuped' or 'cupac',
               'var_reduction_covariates', 'var_reduction_params' (CatBoost parameters for CUPAC);
             - 'handle_outliers': None, 'remove' or 'cap',
-              'outliers_contamination', 'outliers_cols';
+              'outliers_contamination', 'outliers_cols'. Outliers are detected by the numerator and
+              denominator by default; columns of pre-experiment metrics are preferable, because
+              outliers of the metric itself are detected in both groups together and the effect
+              of the treatment makes them more frequent in one group, which biases the uplift towards zero;
             - 'use_stratification', 'strats_cols': override the arguments of this function.
         Incompatible combinations raise ValueError, see `check_exp_params`.
     use_stratification : bool, default=False
@@ -308,6 +314,12 @@ def calc_exp_results(df, exp_group_col, metrics,
         Whether to display a colored table with results.
     pvalue_threshold : float, default=0.05
         Critical level of p-value for coloring table cells.
+    control_group : optional
+        Control group identifier. If given, every other group is compared with it.
+        Otherwise all pairs of groups are compared, and the first group in sorted order
+        is treated as the control in a pair.
+    random_state : int or None, default=None
+        Seed of the bootstrap resampling, so that bootstrap results are reproducible.
 
     Returns
     -------
@@ -323,6 +335,12 @@ def calc_exp_results(df, exp_group_col, metrics,
     """
 
     exp_groups = sorted(df[exp_group_col].dropna().unique())
+    if control_group is None:
+        pairs = [(g1, g2) for i, g1 in enumerate(exp_groups) for g2 in exp_groups[i + 1:]]
+    elif control_group in exp_groups:
+        pairs = [(control_group, g) for g in exp_groups if g != control_group]
+    else:
+        raise ValueError(f"Control group {control_group!r} is not found in column '{exp_group_col}'")
     results = []
 
     for m in metrics:
@@ -333,30 +351,24 @@ def calc_exp_results(df, exp_group_col, metrics,
             valid = df[exp_group_col].notnull() & valid_metric_mask(df, params['num'], params['den'])
             strats_weights = calc_strats_weights(df[valid], params['strats_cols'])
 
-        for i in range(len(exp_groups)):
-            for j in range(i, len(exp_groups)):
-                if i==j:
-                    continue
-                eg_1 = exp_groups[i]
-                eg_2 = exp_groups[j]
+        for eg_1, eg_2 in pairs:
+            exp_results = calc_exp_stattest(
+                df, exp_group_col, eg_1, eg_2, metrics[m],
+                use_stratification, strats_cols,
+                confint_alpha, n_bootstrap, strats_weights, random_state
+            )
 
-                exp_results = calc_exp_stattest(
-                    df, exp_group_col, eg_1, eg_2, metrics[m],
-                    use_stratification, strats_cols,
-                    confint_alpha, n_bootstrap, strats_weights
-                )
-                
-                df_description = pd.DataFrame({
-                    'metric': [m],
-                    'group_1': [eg_1],
-                    'group_2': [eg_2]
-                })
-                results.append(pd.concat([df_description, exp_results], axis=1))
+            df_description = pd.DataFrame({
+                'metric': [m],
+                'group_1': [eg_1],
+                'group_2': [eg_2]
+            })
+            results.append(pd.concat([df_description, exp_results], axis=1))
 
+    # The columns do not depend on the number of comparisons: one p-value is not changed by the correction
     results = pd.concat(results).reset_index(drop=True)
-    if len(results) > 1:
-        results = results.rename(columns={'pvalue': 'pvalue_init'})
-        results['pvalue'] = multipletests(results['pvalue_init'], method=multitest_correction_method)[1]
+    results = results.rename(columns={'pvalue': 'pvalue_init'})
+    results['pvalue'] = multipletests(results['pvalue_init'], method=multitest_correction_method)[1]
 
     if display_colored_results:
         display_table(

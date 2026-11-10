@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 from statsmodels.stats.power import tt_ind_solve_power
 from .metrics import calc_pipeline_mean_and_std, select_columns, valid_metric_mask
+from .results import get_exp_params, check_exp_params
+from .stratification import as_list
 from .weights import calc_weights
 from .stats import weighted_mean, calc_linearization_coef
 
@@ -76,13 +78,21 @@ def calc_power_table(df,
     Raises
     ------
     ValueError
-        If an unsupported `mode` is passed.
+        If an unsupported `mode` is passed or the methods are incompatible, see `results.check_exp_params`.
 
     Notes
     -----
     - Uses statsmodels' `tt_ind_solve_power` under the hood.
     - Assumes two-sided testing.
     """
+
+    strats_cols = as_list(strats_cols)
+    check_exp_params(get_exp_params({
+        'num': metric_num, 'den': metric_den, 'weight_method': weight_method,
+        'apply_linearization': apply_linearization, 'use_delta_method': use_delta_method,
+        'use_stratification': use_stratification, 'strats_cols': strats_cols,
+        'var_reduction_method': var_reduction_method, 'var_reduction_covariates': var_reduction_covariates,
+    }))
 
     df_exp = select_columns(df, metric_num, metric_den, strats_cols, var_reduction_covariates)
     df_exp = df_exp[valid_metric_mask(df_exp, metric_num, metric_den)]

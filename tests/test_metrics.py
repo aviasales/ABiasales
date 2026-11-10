@@ -15,6 +15,14 @@ def test_select_columns_flattens_and_deduplicates(ratio_df):
         select_columns(ratio_df, 'missing')
 
 
+def test_select_columns_with_rows(ratio_df):
+    rows = ratio_df['g'] == 'A'
+    out = select_columns(ratio_df, 'g', 'clicks', rows=rows)
+    assert out.equals(ratio_df.loc[rows, ['g', 'clicks']])
+    out['clicks'] = -1
+    assert (ratio_df['clicks'] >= 0).all()
+
+
 def test_mean_and_std_without_stratification(ratio_df):
     ratio_df['w'] = ratio_df['views']
     mean, std = calc_mean_and_std(ratio_df, 'clicks', 'views', 'w')
@@ -28,7 +36,7 @@ def test_stratified_mean_and_std_match_manual(value_df):
     weights = calc_strats_weights(df, ['platform', 'country'])
     groups = df.groupby(['platform', 'country'])['value']
     exp_mean = sum(weights[s] * g.mean() for s, g in groups)
-    exp_var = sum(weights[s] * g.std(ddof=0) ** 2 for s, g in groups)
+    exp_var = sum(weights[s] * g.std(ddof=1) ** 2 for s, g in groups)
     assert mean == pytest.approx(exp_mean)
     assert std == pytest.approx(np.sqrt(exp_var))
 
@@ -64,7 +72,7 @@ def test_groups_stats_value_metric(value_df):
     df_a, df_b = value_df[value_df['g'] == 'A'], value_df[value_df['g'] == 'B']
     mean_a, std_a, weights_a, ratios_a, mean_b, std_b, *_ = calc_groups_stats(df_a, df_b, 'value')
     assert mean_a == pytest.approx(df_a['value'].mean())
-    assert std_a == pytest.approx(df_a['value'].std(ddof=0))
+    assert std_a == pytest.approx(df_a['value'].std(ddof=1))
     assert np.all(weights_a == 1)
 
 

@@ -231,7 +231,7 @@ def generate_real_exp_data(df,
 
         # Inject Gaussian noise to simulate uplift in mean and std
         inj_mean = df[metric_num].mean() * uplift
-        inj_std = df[metric_num].std(ddof=1) * uplift
+        inj_std = df[metric_num].std(ddof=1) * abs(uplift)
         noise = np.random.normal(loc=inj_mean, scale=inj_std, size=sample_size)
         df_out[metric_num] += noise
 
@@ -245,7 +245,7 @@ def generate_real_exp_data(df,
 
         ind = df_out[df_out[metric_num] != 0].index
         inj_mean = df_out.loc[ind, metric_num].mean() * uplift
-        inj_std = df_out.loc[ind, metric_num].std(ddof=1) * uplift
+        inj_std = df_out.loc[ind, metric_num].std(ddof=1) * abs(uplift)
         noise = np.random.normal(loc=inj_mean, scale=inj_std, size=len(ind))
 
         df_out.loc[ind, metric_num] += noise

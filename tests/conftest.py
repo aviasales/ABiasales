@@ -19,17 +19,23 @@ def make_ratio_df(rng, n=4000, uplift=0.0, groups=('A', 'B')):
     User-level data for a ratio metric (clicks / views) with heavy-tailed views.
 
     `uplift` multiplies the click probability of every group except the first.
+    The covariate is built from clicks without uplift, like pre-experiment data.
     """
     views = np.exp(rng.normal(1, 1.5, n)).astype(int) + 1
     ctr = rng.beta(2, 18, n)
     group = np.array(groups)[np.arange(n) % len(groups)]
-    ctr = np.where(group != groups[0], np.clip(ctr * (1 + uplift), 0, 1), ctr)
-    clicks = rng.binomial(views, ctr)
+    clicks_pre = rng.binomial(views, ctr)
+    clicks = clicks_pre
+    if uplift:
+        # Added clicks make clicks ~ Binomial(views, ctr * (1 + uplift)) in treatment groups
+        ctr_up = np.clip(ctr * (1 + uplift), 0, 1)
+        added = rng.binomial(views - clicks_pre, np.clip((ctr_up - ctr) / (1 - ctr), 0, 1))
+        clicks = np.where(group != groups[0], clicks_pre + added, clicks_pre)
     return pd.DataFrame({
         'g': group,
         'views': views,
         'clicks': clicks,
-        'clicks_cov': clicks + rng.normal(0, 2, n),
+        'clicks_cov': clicks_pre + rng.normal(0, 2, n),
         'platform': rng.choice(['ios', 'android'], n),
         'country': rng.choice(['RU', 'INT'], n),
     })

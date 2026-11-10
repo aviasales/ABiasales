@@ -18,10 +18,11 @@ def test_weighted_std_matches_manual(rng):
     assert weighted_std(x, w) == pytest.approx(np.sqrt(np.average((x - m) ** 2, weights=w)))
 
 
-def test_weighted_mean_std_uniform_equals_std(rng):
-    x = rng.normal(size=1000)
-    assert weighted_mean_std(x, np.ones(1000)) == pytest.approx(np.std(x))
-    assert weighted_mean_std(x, np.ones(1000)) == pytest.approx(weighted_std(x, np.ones(1000)))
+def test_weighted_mean_std_uniform_equals_sample_std(rng):
+    # The small-sample correction n / (n - 1) keeps the t-test FPR at alpha on small samples
+    x = rng.normal(size=10)
+    assert weighted_mean_std(x, np.ones(10)) == pytest.approx(np.std(x, ddof=1))
+    assert weighted_mean_std(np.array([3.]), np.array([1.])) == 0
 
 
 def test_weighted_mean_std_is_scale_invariant_in_weights(rng):
@@ -53,7 +54,7 @@ def test_delta_method_std_matches_simulation(rng):
 
 def test_calc_std_branches(rng):
     num, den, w = rng.poisson(3, 200), rng.poisson(5, 200) + 1, rng.random(200)
-    assert calc_std(num) == pytest.approx(np.std(num))
+    assert calc_std(num) == pytest.approx(np.std(num, ddof=1))
     assert calc_std(num, weights=w) == pytest.approx(weighted_mean_std(num, w))
     assert calc_std(num, den, use_delta_method=True) == pytest.approx(calc_delta_method_std(num, den))
     assert calc_std(num, den, w) == pytest.approx(weighted_mean_std(num / den, w))
