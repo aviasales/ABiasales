@@ -12,9 +12,9 @@ It includes:
 pip install git+https://github.com/aviasales/ABiasales.git
 ```
 
-Styled result tables in Jupyter need optional dependencies:
+Optional dependencies: `display` for styled result tables in Jupyter, `cupac` for CUPAC (CatBoost):
 ```bash
-pip install "abiasales[display] @ git+https://github.com/aviasales/ABiasales.git"
+pip install "abiasales[display,cupac] @ git+https://github.com/aviasales/ABiasales.git"
 ```
 
 ## Quick start
@@ -43,6 +43,7 @@ results = calc_exp_results(
 ```
 
 `results` is numeric: relative uplift and its confidence interval are fractions (`0.05` means +5%).
+For z- and t-tests the relative interval is Fieller's: it excludes 0 exactly when the p-value is significant.
 In Jupyter the function also displays a formatted table, outside Jupyter it prints it as text.
 `format_results(results)` returns the same human-readable table.
 
@@ -68,7 +69,7 @@ proportion test and bootstrap ignore stratification.
 
 ## Tests
 ```bash
-pip install -e ".[test]"
+pip install -e ".[test,cupac]"
 pytest              # all tests
 pytest -m "not slow"  # skip statistical calibration tests
 ```

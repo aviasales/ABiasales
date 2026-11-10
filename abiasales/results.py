@@ -2,7 +2,7 @@ import pandas as pd
 from statsmodels.stats.multitest import multipletests
 from .cleaning import remove_outliers, cap_above_quantile
 from .metrics import calc_groups_stats, select_columns, valid_metric_mask
-from .stratification import calc_strats_weights
+from .stratification import calc_strats_weights, as_list
 from .inference import calc_stattest
 
 def display_table(df, style=None):
@@ -81,6 +81,7 @@ def get_exp_params(metric_dict):
     params['strats_cols'] = metric_dict.get('strats_cols', None)
     params['var_reduction_method'] = metric_dict.get('var_reduction_method', None)
     params['var_reduction_covariates'] = metric_dict.get('var_reduction_covariates', None)
+    params['var_reduction_params'] = metric_dict.get('var_reduction_params', None)
     params['handle_outliers'] = metric_dict.get('handle_outliers', None)
     params['outliers_contamination'] = metric_dict.get('outliers_contamination', 0.001)
     params['outliers_cols'] = metric_dict.get('outliers_cols', None)
@@ -88,11 +89,7 @@ def get_exp_params(metric_dict):
 
     return params
 
-def _strata_settings(metric_dict, use_stratification, strats_cols):
-    # A metric config can override the stratification settings of the experiment
-    return metric_dict.get('use_stratification', use_stratification), metric_dict.get('strats_cols', strats_cols)
-
-def check_exp_params(params, use_stratification=False):
+def check_exp_params(params):
     """
     Validates a combination of metric analysis parameters.
 
@@ -100,8 +97,6 @@ def check_exp_params(params, use_stratification=False):
     ----------
     params : dict
         Metric parameters as returned by `get_exp_params`.
-    use_stratification : bool, default=False
-        Whether stratification is applied.
 
     Raises
     ------
@@ -120,7 +115,10 @@ def check_exp_params(params, use_stratification=False):
         if params[key] not in values:
             raise ValueError(f"{key}='{params[key]}' is not from {values}")
 
+    use_stratification = params['use_stratification']
     errors = []
+    if use_stratification and not params['strats_cols']:
+        errors.append("Stratification requires strats_cols")
     if params['use_delta_method'] and params['weight_method'] != 'size':
         errors.append("Delta Method estimates the ratio of sums, so it requires weight_method='size'")
     if params['use_delta_method'] and params['apply_linearization']:
@@ -133,9 +131,36 @@ def check_exp_params(params, use_stratification=False):
                       "Delta Method, variance reduction and stratification")
     if params['stat_method'] == 'bootstrap' and use_stratification:
         errors.append("Bootstrap ignores stratification")
+    if params['stat_method'] == 'bootstrap' and params['use_delta_method']:
+        errors.append("Bootstrap does not use the Delta Method std")
 
     if errors:
         raise ValueError(f"Invalid config for metric '{params['num']}': " + "; ".join(errors))
+
+def resolve_exp_params(metric_dict, use_stratification=False, strats_cols=None):
+    """
+    Returns validated metric parameters with the stratification settings of the experiment.
+
+    Parameters
+    ----------
+    metric_dict : dict
+        Metric configuration, see `calc_exp_results`. 'use_stratification' and
+        'strats_cols' in it override the experiment settings.
+    use_stratification : bool, default=False
+        Whether stratification is applied in the experiment.
+    strats_cols : str or list of str, optional
+        Stratification columns of the experiment.
+
+    Returns
+    -------
+    dict
+        Configuration with all supported keys, see `get_exp_params`.
+    """
+    params = get_exp_params(metric_dict)
+    params['use_stratification'] = metric_dict.get('use_stratification', use_stratification)
+    params['strats_cols'] = as_list(metric_dict.get('strats_cols', strats_cols))
+    check_exp_params(params)
+    return params
 
 def calc_exp_stattest(df, exp_group_col, eg1, eg2, metric_dict,
                       use_stratification=False, strats_cols=None,
@@ -162,10 +187,7 @@ def calc_exp_stattest(df, exp_group_col, eg1, eg2, metric_dict,
     eg2 : str or int
         Treatment group identifier.
     metric_dict : dict
-        Dictionary of metric configuration. Keys typically include:
-            'num', 'den', 'weight_method', 'apply_linearization',
-            'use_delta_method', 'stat_method', 'uplift_type',
-            'var_reduction_method', 'var_reduction_covariates'.
+        Dictionary of metric configuration, see `calc_exp_results`.
     use_stratification : bool, default=False
         Whether to apply stratification when estimating mean and standard deviation.
         Overridden by 'use_stratification' in `metric_dict` if present.
@@ -192,11 +214,9 @@ def calc_exp_stattest(df, exp_group_col, eg1, eg2, metric_dict,
             - pvalue
     """
     
-    params = get_exp_params(metric_dict)
-    use_stratification, strats_cols = _strata_settings(metric_dict, use_stratification, strats_cols)
-    check_exp_params(params, use_stratification)
+    params = resolve_exp_params(metric_dict, use_stratification, strats_cols)
 
-    columns = [exp_group_col, params['num'], params['den'], strats_cols,
+    columns = [exp_group_col, params['num'], params['den'], params['strats_cols'],
                params['var_reduction_covariates'], params['outliers_cols']]
     mask = df[exp_group_col].isin([eg1, eg2]) & valid_metric_mask(df, params['num'], params['den'])
     df_exp = select_columns(df, *columns)[mask]
@@ -223,10 +243,11 @@ def calc_exp_stattest(df, exp_group_col, eg1, eg2, metric_dict,
         weight_method=params['weight_method'],
         apply_linearization=params['apply_linearization'],
         use_delta_method=params['use_delta_method'],
-        use_stratification=use_stratification,
-        strats_cols=strats_cols,
+        use_stratification=params['use_stratification'],
+        strats_cols=params['strats_cols'],
         var_reduction_method=params['var_reduction_method'],
         var_reduction_covariates=params['var_reduction_covariates'],
+        var_reduction_params=params['var_reduction_params'],
         strats_weights=strats_weights
     )
 
@@ -259,15 +280,24 @@ def calc_exp_results(df, exp_group_col, metrics,
     exp_group_col : str
         Column in `df` that defines experiment group assignment.
     metrics : dict
-        A dictionary of metric configurations.
-        Dictionary of a single metric configuration includes:
-            'num', 'den', 'weight_method', 'apply_linearization',
-            'use_delta_method', 'stat_method', 'uplift_type',
-            'var_reduction_method', 'var_reduction_covariates'.
+        A dictionary {metric name: metric configuration}. Keys of a metric configuration
+        (only 'num' is required, defaults are in `get_exp_params`):
+            - 'num', 'den': numerator and denominator columns;
+            - 'weight_method': 'uniform', 'size', 'sqrt' or 'intra_corr';
+            - 'apply_linearization', 'use_delta_method': ratio metric methods;
+            - 'stat_method': 'proportion', 'z_test', 't_test' or 'bootstrap';
+            - 'uplift_type': 'abs' or 'rel';
+            - 'var_reduction_method': None, 'cuped' or 'cupac',
+              'var_reduction_covariates', 'var_reduction_params' (CatBoost parameters for CUPAC);
+            - 'handle_outliers': None, 'remove' or 'cap',
+              'outliers_contamination', 'outliers_cols';
+            - 'use_stratification', 'strats_cols': override the arguments of this function.
+        Incompatible combinations raise ValueError, see `check_exp_params`.
     use_stratification : bool, default=False
         Whether to apply stratification based on `strats_cols`.
     strats_cols : list of str, optional
         Column names to define strata if stratification is enabled.
+        With stratification, variance reduction models are also fitted per stratum.
     confint_alpha : float, default=0.05
         Significance level for confidence intervals.
     n_bootstrap : int, default=500
@@ -292,17 +322,16 @@ def calc_exp_results(df, exp_group_col, metrics,
         Use `format_results` to get a human-readable table.
     """
 
-    exp_groups = sorted(df[exp_group_col].unique())
+    exp_groups = sorted(df[exp_group_col].dropna().unique())
     results = []
 
     for m in metrics:
         # Stratum weights are shared by all pairs of groups, so a group has the same mean in every comparison
         strats_weights = None
-        metric_stratification, metric_strats_cols = _strata_settings(metrics[m], use_stratification, strats_cols)
-        if metric_stratification and metric_strats_cols:
-            params = get_exp_params(metrics[m])
+        params = resolve_exp_params(metrics[m], use_stratification, strats_cols)
+        if params['use_stratification']:
             valid = df[exp_group_col].notnull() & valid_metric_mask(df, params['num'], params['den'])
-            strats_weights = calc_strats_weights(df[valid], metric_strats_cols)
+            strats_weights = calc_strats_weights(df[valid], params['strats_cols'])
 
         for i in range(len(exp_groups)):
             for j in range(i, len(exp_groups)):

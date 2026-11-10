@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 from sklearn.model_selection import KFold
+from .stratification import as_list
 
 class VarianceReducer:
     """
@@ -16,9 +17,9 @@ class VarianceReducer:
     model_params : dict
         Parameters passed to the regression model (only used for CUPAC).
     n_folds : int
-        Number of folds for out-of-fold predictions on training data (only used for CUPAC).
-    model : object
-        Trained model instance (LinearRegression or CatBoostRegressor).
+        Number of folds for cross-fitting (only used for CUPAC).
+    models : list
+        Trained models: one LinearRegression for CUPED, `n_folds` CatBoostRegressor for CUPAC.
     mean_prediction : float
         Mean of predictions on training data; used to preserve scale.
     """
@@ -29,13 +30,17 @@ class VarianceReducer:
         self.method = method
         self.model_params = model_params or {"iterations": 100}
         self.n_folds = n_folds
-        self.model = None
+        self.models = None
         self.mean_prediction = None
+        self._train_prediction = None
 
     def _make_model(self):
         if self.method == 'cuped':
             return LinearRegression()
-        from catboost import CatBoostRegressor
+        try:
+            from catboost import CatBoostRegressor
+        except ImportError as e:
+            raise ImportError("CUPAC requires catboost: pip install 'abiasales[cupac]'") from e
         return CatBoostRegressor(**self.model_params, logging_level="Silent", allow_writing_files=False)
 
     def fit(self, X, y):
@@ -53,11 +58,35 @@ class VarianceReducer:
         -------
         self : VarianceReducer
             Fitted instance.
+
+        Notes
+        -----
+        For CUPAC, `n_folds` models are cross-fitted: each one predicts the fold
+        it was not trained on. In-sample predictions of a flexible model are
+        overfitted and would artificially shrink the variance of the training group.
         """
-        self.model = self._make_model()
-        self.model.fit(X, y)
-        self.mean_prediction = np.mean(self.model.predict(X))
+        X_np, y_np = np.asarray(X), np.asarray(y, dtype=float)
+
+        if self.method == 'cuped':
+            self.models = [self._make_model().fit(X_np, y_np)]
+            self._train_prediction = self.models[0].predict(X_np)
+        else:
+            self.models = []
+            self._train_prediction = np.empty(len(y_np))
+            for train_idx, test_idx in KFold(self.n_folds, shuffle=True, random_state=42).split(X_np):
+                model = self._make_model().fit(X_np[train_idx], y_np[train_idx])
+                self._train_prediction[test_idx] = model.predict(X_np[test_idx])
+                self.models.append(model)
+
+        self.mean_prediction = np.mean(self._train_prediction)
         return self
+
+    def predict(self, X):
+        """
+        Predicts the target for new data: the average prediction of the fitted models.
+        """
+        X_np = np.asarray(X)
+        return np.mean([model.predict(X_np) for model in self.models], axis=0)
 
     def transform(self, X, y):
         """
@@ -75,8 +104,7 @@ class VarianceReducer:
         adjusted_y : np.ndarray
             Variance-reduced target values.
         """
-        y_pred = self.model.predict(X)
-        return y - y_pred + self.mean_prediction
+        return np.asarray(y, dtype=float) - self.predict(X) + self.mean_prediction
 
     def fit_transform(self, X, y):
         """
@@ -96,21 +124,10 @@ class VarianceReducer:
 
         Notes
         -----
-        For CUPAC the training data is transformed with out-of-fold predictions:
-        in-sample predictions of a flexible model are overfitted and would
-        artificially shrink the variance of the training group.
+        For CUPAC the training data is transformed with out-of-fold predictions, see `fit`.
         """
         self.fit(X, y)
-        if self.method == 'cuped':
-            return self.transform(X, y)
-
-        X_np, y_np = np.asarray(X), np.asarray(y)
-        y_pred = np.empty(len(y_np))
-        for train_idx, test_idx in KFold(self.n_folds, shuffle=True, random_state=42).split(X_np):
-            model = self._make_model().fit(X_np[train_idx], y_np[train_idx])
-            y_pred[test_idx] = model.predict(X_np[test_idx])
-
-        return y_np - y_pred + self.mean_prediction
+        return np.asarray(y, dtype=float) - self._train_prediction + self.mean_prediction
 
 
 def check_covariates(df, covariate_cols, method='cuped'):
@@ -138,7 +155,7 @@ def min_fit_size(method, n_covariates, n_folds=5):
     return max(10, 2 * (n_covariates + 1), n_folds if method == 'cupac' else 0)
 
 
-def apply_variance_reduction(df, target_col, covariate_cols, method='cuped', strats_cols=None):
+def apply_variance_reduction(df, target_col, covariate_cols, method='cuped', strats_cols=None, model_params=None):
     """
     Applies variance reduction to a target column using specified covariates.
 
@@ -154,6 +171,8 @@ def apply_variance_reduction(df, target_col, covariate_cols, method='cuped', str
         Reduction method: 'cuped' (LinearRegression) or 'cupac' (CatBoost).
     strats_cols : list of str, optional
         Columns to use for stratification. If provided, reduction is applied per stratum.
+    model_params : dict, optional
+        Parameters of the CatBoost model (only used for CUPAC).
 
     Returns
     -------
@@ -166,6 +185,7 @@ def apply_variance_reduction(df, target_col, covariate_cols, method='cuped', str
     """
 
     check_covariates(df, covariate_cols, method)
+    strats_cols = as_list(strats_cols)
     reduced = df[target_col].to_numpy(dtype=float).copy()
 
     if strats_cols:
@@ -181,13 +201,14 @@ def apply_variance_reduction(df, target_col, covariate_cols, method='cuped', str
             warnings.warn(f"Variance reduction is skipped for stratum {stratum}: "
                           f"{mask.sum()} units, at least {min_size} are needed")
             continue
-        reducer = VarianceReducer(method=method)
+        reducer = VarianceReducer(method=method, model_params=model_params)
         reduced[mask] = reducer.fit_transform(df.loc[mask, covariate_cols], df.loc[mask, target_col])
 
     return pd.Series(reduced, index=df.index)
 
 
-def apply_exp_variance_reduction(df_a, df_b, target_col, covariate_cols, method='cuped', strats_cols=None):
+def apply_exp_variance_reduction(df_a, df_b, target_col, covariate_cols, method='cuped', strats_cols=None,
+                                 model_params=None):
     """
     Applies variance reduction to two datasets using a model trained on group A.
 
@@ -205,6 +226,8 @@ def apply_exp_variance_reduction(df_a, df_b, target_col, covariate_cols, method=
         Method: 'cuped' or 'cupac'.
     strats_cols : list of str, optional
         Stratification columns (applies reduction per stratum if given).
+    model_params : dict, optional
+        Parameters of the CatBoost model (only used for CUPAC).
 
     Returns
     -------
@@ -221,6 +244,7 @@ def apply_exp_variance_reduction(df_a, df_b, target_col, covariate_cols, method=
 
     check_covariates(df_a, covariate_cols, method)
     check_covariates(df_b, covariate_cols, method)
+    strats_cols = as_list(strats_cols)
 
     adjusted_a = df_a[target_col].to_numpy(dtype=float).copy()
     adjusted_b = df_b[target_col].to_numpy(dtype=float).copy()
@@ -239,7 +263,7 @@ def apply_exp_variance_reduction(df_a, df_b, target_col, covariate_cols, method=
             warnings.warn(f"Variance reduction is skipped for stratum {stratum}: "
                           f"{mask_a.sum()} units in group A, at least {min_size} are needed")
             continue
-        reducer = VarianceReducer(method=method)
+        reducer = VarianceReducer(method=method, model_params=model_params)
         adjusted_a[mask_a] = reducer.fit_transform(df_a.loc[mask_a, covariate_cols], df_a.loc[mask_a, target_col])
         if mask_b.any():
             adjusted_b[mask_b] = reducer.transform(df_b.loc[mask_b, covariate_cols], df_b.loc[mask_b, target_col])

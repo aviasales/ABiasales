@@ -33,6 +33,8 @@ CONFIGS = {
     'value stratified': (VALUE, True),
     'value cuped': ({**VALUE, 'var_reduction_method': 'cuped', 'var_reduction_covariates': ['cov']}, False),
     'value stratified cuped': ({**VALUE, 'var_reduction_method': 'cuped', 'var_reduction_covariates': ['cov']}, True),
+    'value cupac': ({**VALUE, 'var_reduction_method': 'cupac', 'var_reduction_covariates': ['cov'],
+                     'var_reduction_params': {'iterations': 30}}, False),
     'proportion': ({'num': 'flag', 'stat_method': 'proportion', 'uplift_type': 'abs'}, False),
     'ratio uniform': (RATIO, False),
     'ratio size': ({**RATIO, 'weight_method': 'size'}, False),
@@ -51,6 +53,8 @@ CONFIGS = {
 @pytest.mark.parametrize('name', CONFIGS)
 def test_aa_false_positive_rate(name):
     config, use_strat = CONFIGS[name]
+    if config.get('var_reduction_method') == 'cupac':
+        pytest.importorskip('catboost')
     rng = np.random.default_rng(zlib.crc32(name.encode()))
     make_df = make_ratio_df if 'den' in config else make_value_df
     n_users = N_USERS_RATIO if 'den' in config else N_USERS

@@ -24,23 +24,30 @@ def test_get_exp_params_defaults():
     assert params['uplift_type'] == 'rel' and params['den'] is None
 
 
-@pytest.mark.parametrize('config, use_strat, match', [
-    ({'stat_method': 'ttest'}, False, 'stat_method'),
-    ({'weight_method': 'mean'}, False, 'weight_method'),
-    ({'den': 'd', 'use_delta_method': True}, False, "weight_method='size'"),
-    ({'den': 'd', 'weight_method': 'size', 'use_delta_method': True, 'apply_linearization': True}, False, 'linearized'),
-    ({'stat_method': 'proportion', 'var_reduction_method': 'cuped'}, False, 'Proportion'),
-    ({'stat_method': 'proportion'}, True, 'Proportion'),
-    ({'stat_method': 'bootstrap'}, True, 'Bootstrap'),
+STRAT = {'use_stratification': True, 'strats_cols': ['s']}
+DELTA = {'den': 'd', 'weight_method': 'size', 'use_delta_method': True}
+
+
+@pytest.mark.parametrize('config, match', [
+    ({'stat_method': 'ttest'}, 'stat_method'),
+    ({'weight_method': 'mean'}, 'weight_method'),
+    ({'den': 'd', 'use_delta_method': True}, "weight_method='size'"),
+    ({**DELTA, 'apply_linearization': True}, 'linearized'),
+    ({'stat_method': 'proportion', 'var_reduction_method': 'cuped'}, 'Proportion'),
+    ({'stat_method': 'proportion', **STRAT}, 'Proportion'),
+    ({'stat_method': 'bootstrap', **STRAT}, 'Bootstrap ignores'),
+    ({**DELTA, 'stat_method': 'bootstrap'}, 'Delta Method std'),
+    ({'use_stratification': True}, 'strats_cols'),
 ])
-def test_check_exp_params_rejects_invalid(config, use_strat, match):
+def test_check_exp_params_rejects_invalid(config, match):
     with pytest.raises(ValueError, match=match):
-        check_exp_params(get_exp_params({'num': 'x', **config}), use_strat)
+        check_exp_params(get_exp_params({'num': 'x', **config}))
 
 
 def test_check_exp_params_accepts_valid():
-    check_exp_params(get_exp_params({'num': 'x', 'den': 'd', 'weight_method': 'size', 'use_delta_method': True,
-                                     'var_reduction_method': 'cuped', 'var_reduction_covariates': ['c']}), True)
+    check_exp_params(get_exp_params({'num': 'x', **DELTA, **STRAT, 'stat_method': 'z_test',
+                                     'var_reduction_method': 'cuped', 'var_reduction_covariates': ['c']}))
+    check_exp_params(get_exp_params({'num': 'x', 'den': 'd', 'apply_linearization': True, 'stat_method': 'bootstrap'}))
 
 
 def test_calc_exp_results_all_pairs_and_correction(rng):
@@ -143,3 +150,40 @@ def test_multigroup_stratification_uses_shared_strata_weights(rng):
     by_pair = res.set_index(['group_1', 'group_2'])
     assert by_pair.loc[('A', 'B'), 'mean_1'] == pytest.approx(by_pair.loc[('A', 'C'), 'mean_1'])
     assert by_pair.loc[('A', 'B'), 'mean_2'] == pytest.approx(by_pair.loc[('B', 'C'), 'mean_1'])
+
+
+def test_strats_cols_can_be_a_single_name(value_df):
+    # Regression: a string was split into characters (KeyError: 'p')
+    as_list = calc_exp_stattest(value_df, 'g', 'A', 'B', {'num': 'value'}, use_stratification=True, strats_cols=['platform'])
+    as_str = calc_exp_stattest(value_df, 'g', 'A', 'B', {'num': 'value'}, use_stratification=True, strats_cols='platform')
+    pd.testing.assert_frame_equal(as_list, as_str)
+
+
+def test_stratification_without_strats_cols_raises(value_df):
+    with pytest.raises(ValueError, match='strats_cols'):
+        calc_exp_stattest(value_df, 'g', 'A', 'B', {'num': 'value'}, use_stratification=True)
+
+
+def test_missing_group_values_are_ignored(value_df):
+    # Regression: sorting groups with NaN raised TypeError
+    value_df.loc[:10, 'g'] = np.nan
+    res = calc_exp_results(value_df, 'g', {'v': {'num': 'value'}}, display_colored_results=False)
+    assert list(res[['group_1', 'group_2']].iloc[0]) == ['A', 'B']
+
+
+def test_strats_cols_without_stratification_do_not_change_variance_reduction(value_df):
+    # Regression: CUPED was fitted per stratum whenever strats_cols were passed
+    config = {'num': 'value', 'var_reduction_method': 'cuped', 'var_reduction_covariates': ['cov']}
+    plain = calc_exp_stattest(value_df, 'g', 'A', 'B', config)
+    with_cols = calc_exp_stattest(value_df, 'g', 'A', 'B', config, strats_cols=['platform', 'country'])
+    pd.testing.assert_frame_equal(plain, with_cols)
+
+
+def test_var_reduction_params_are_passed_to_the_model(value_df, monkeypatch):
+    from abiasales import metrics
+    seen = []
+    orig = metrics.apply_exp_variance_reduction
+    monkeypatch.setattr(metrics, 'apply_exp_variance_reduction', lambda *args: seen.append(args[-1]) or orig(*args))
+    calc_exp_stattest(value_df, 'g', 'A', 'B', {'num': 'value', 'var_reduction_method': 'cuped',
+                                                'var_reduction_covariates': ['cov'], 'var_reduction_params': {'depth': 3}})
+    assert seen == [{'depth': 3}]

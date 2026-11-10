@@ -40,6 +40,7 @@ def test_missing_values_in_cuped_covariates_raise(value_df):
 
 
 def test_cupac_supports_missing_covariates(value_df, tmp_path, monkeypatch):
+    pytest.importorskip('catboost')
     monkeypatch.chdir(tmp_path)
     df = value_df.copy()
     df.loc[::10, 'cov'] = np.nan
@@ -93,6 +94,7 @@ def test_model_is_fitted_on_control_only(value_df):
 
 def test_cupac_uses_out_of_fold_predictions(rng, tmp_path, monkeypatch):
     # In-sample predictions of a flexible model on pure noise shrink the variance
+    pytest.importorskip('catboost')
     monkeypatch.chdir(tmp_path)
     n = 1000
     df = pd.DataFrame(rng.normal(size=(n, 5)), columns=[f'c{i}' for i in range(5)])
@@ -106,9 +108,27 @@ def test_cupac_uses_out_of_fold_predictions(rng, tmp_path, monkeypatch):
 
 
 def test_cupac_reduces_variance_with_nonlinear_signal(rng, tmp_path, monkeypatch):
+    pytest.importorskip('catboost')
     monkeypatch.chdir(tmp_path)
     n = 2000
     x = rng.normal(size=(n, 2))
     df = pd.DataFrame({'c0': x[:, 0], 'c1': x[:, 1], 'y': np.sin(2 * x[:, 0]) + x[:, 1] ** 2 + rng.normal(0, 0.3, n)})
     adjusted = apply_variance_reduction(df, 'y', ['c0', 'c1'], method='cupac')
     assert adjusted.var() < 0.3 * df['y'].var()
+
+
+def test_cupac_predicts_new_data_with_fold_models(value_df, tmp_path, monkeypatch):
+    # The full model is not fitted: new data gets the average prediction of the cross-fitted models
+    pytest.importorskip('catboost')
+    monkeypatch.chdir(tmp_path)
+    reducer = VarianceReducer('cupac', model_params={'iterations': 10}, n_folds=3).fit(value_df[['cov']], value_df['value'])
+    assert len(reducer.models) == 3
+    expected = np.mean([m.predict(value_df[['cov']].to_numpy()) for m in reducer.models], axis=0)
+    np.testing.assert_allclose(reducer.predict(value_df[['cov']]), expected)
+
+
+def test_cupac_without_catboost_has_clear_error(value_df, monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, 'catboost', None)
+    with pytest.raises(ImportError, match=r'abiasales\[cupac\]'):
+        VarianceReducer('cupac').fit(value_df[['cov']], value_df['value'])

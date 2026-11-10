@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from statsmodels.stats.power import tt_ind_solve_power
-from .metrics import calc_pipeline_mean_and_std
+from .metrics import calc_pipeline_mean_and_std, select_columns, valid_metric_mask
 from .weights import calc_weights
 from .stats import weighted_mean, calc_linearization_coef
 
@@ -16,8 +16,9 @@ def calc_power_table(df,
                      strats_cols=None,
                      var_reduction_method=None,
                      var_reduction_covariates=None,
-                     alpha=[0.05], power=[0.8], 
-                     uplift=[0.05], sample_size=[1000],
+                     var_reduction_params=None,
+                     alpha=(0.05,), power=(0.8,),
+                     uplift=(0.05,), sample_size=(1000,),
                      control_perc=0.5,
                      return_power_list=False):
     """
@@ -36,8 +37,8 @@ def calc_power_table(df,
         Name of denominator column (e.g., users, sessions). If None, assumes value of 1.
     mode : {'sample_size', 'mde'}, default='sample_size'
         Type of power calculation:
-        - 'sample_size': computes sample size needed to detect given uplifts.
-        - 'mde': computes the minimum detectable uplift for given sample size.
+        - 'sample_size': computes the control group size needed to detect given uplifts.
+        - 'mde': computes the minimum detectable uplift for given control group sizes.
     weight_method : str, default='uniform'
         Weighting strategy ('uniform', 'size', 'sqrt', 'intra_corr').
     apply_linearization : bool, default=False
@@ -52,14 +53,16 @@ def calc_power_table(df,
         Method for variance reduction ('cuped', 'cupac').
     var_reduction_covariates : list of str, optional
         Covariates to use for variance reduction.
-    alpha : list of float, default=[0.05]
+    var_reduction_params : dict, optional
+        Parameters of the CatBoost model for CUPAC.
+    alpha : list of float, default=(0.05,)
         Type I error rates (false positive rate).
-    power : list of float, default=[0.8]
+    power : list of float, default=(0.8,)
         Desired statistical power (1 - Type II error).
-    uplift : list of float, default=[0.05]
+    uplift : list of float, default=(0.05,)
         Expected treatment effect (only for mode='sample_size').
-    sample_size : list of int, default=[1000]
-        Sample sizes to evaluate MDE for (only for mode='mde').
+    sample_size : list of int, default=(1000,)
+        Control group sizes to evaluate MDE for (only for mode='mde').
     control_perc : float, default=0.5
         Proportion of total sample allocated to control group (used to compute treatment size).
     return_power_list : bool, default=False
@@ -81,13 +84,8 @@ def calc_power_table(df,
     - Assumes two-sided testing.
     """
 
-    df_exp = df.copy()
-    if metric_den is None:
-        df_exp['den'] = 1
-        metric_den = 'den'
-
-    df_exp = df_exp[df_exp[metric_num].notnull()]
-    df_exp = df_exp[(df_exp[metric_den].notnull()) & (df_exp[metric_den] != 0)]
+    df_exp = select_columns(df, metric_num, metric_den, strats_cols, var_reduction_covariates)
+    df_exp = df_exp[valid_metric_mask(df_exp, metric_num, metric_den)]
 
     mean, std = calc_pipeline_mean_and_std(
         df_exp,
@@ -99,14 +97,16 @@ def calc_power_table(df,
         use_stratification=use_stratification,
         strats_cols=strats_cols,
         var_reduction_method=var_reduction_method,
-        var_reduction_covariates=var_reduction_covariates
+        var_reduction_covariates=var_reduction_covariates,
+        var_reduction_params=var_reduction_params
     )
 
     # Linearized metric has zero mean, so the effect is scaled by the mean of the original ratio
     if apply_linearization:
-        weights = calc_weights(df_exp[metric_num], df_exp[metric_den], weight_method)
-        r0 = calc_linearization_coef(df_exp[metric_num], df_exp[metric_den], weights)
-        base = r0 * weighted_mean(df_exp[metric_den], weights)
+        den = df_exp[metric_den] if metric_den else np.ones(len(df_exp))
+        weights = calc_weights(df_exp[metric_num], den, weight_method)
+        r0 = calc_linearization_coef(df_exp[metric_num], den, weights)
+        base = r0 * weighted_mean(den, weights)
     else:
         base = mean
 

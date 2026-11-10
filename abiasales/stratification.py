@@ -1,6 +1,15 @@
 import numpy as np
 import pandas as pd
 
+def as_list(cols):
+    """
+    Returns column names as a list: a single name is wrapped into a list, None is kept.
+    """
+    if cols is None or isinstance(cols, list):
+        return cols
+    return [cols] if isinstance(cols, str) else list(cols)
+
+
 def _as_tuple(stratum):
     # groupby returns scalar keys for a single column and tuples for several
     return stratum if isinstance(stratum, tuple) else (stratum,)
@@ -28,7 +37,7 @@ def add_strata_col(df, strats_cols):
     then df['unified_strata'] = [('iOS', 'US'), ('Android', 'UK'), ...]
     """
 
-    df['unified_strata'] = list(zip(*[df[c] for c in strats_cols]))
+    df['unified_strata'] = list(zip(*[df[c] for c in as_list(strats_cols)]))
 
 
 def calc_strats_weights(df, strats_cols):
@@ -54,7 +63,7 @@ def calc_strats_weights(df, strats_cols):
     for each unique stratum s.
     """
 
-    counts = df.groupby(list(strats_cols), dropna=False).size()
+    counts = df.groupby(as_list(strats_cols), dropna=False).size()
     weights = counts / counts.sum()
 
     return {_as_tuple(s): w for s, w in weights.items()}
@@ -81,6 +90,6 @@ def get_strats_indexes(df, strats_cols):
     Useful for applying computations separately per stratum.
     """
 
-    indexes = df.groupby(list(strats_cols), dropna=False).indices
+    indexes = df.groupby(as_list(strats_cols), dropna=False).indices
 
     return {_as_tuple(s): idx for s, idx in indexes.items()}

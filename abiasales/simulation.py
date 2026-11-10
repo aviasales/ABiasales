@@ -4,21 +4,34 @@ import pandas as pd
 import scipy.stats
 from tqdm import tqdm
 from .data_generation import generate_real_exp_data
-from .results import get_exp_params, calc_exp_stattest, display_table
+from .metrics import select_columns
+from .results import get_exp_params, check_exp_params, calc_exp_stattest, display_table
+
+def _is_useful_config(config):
+    # Ratio options do not change a metric without denominator, such configs would be duplicates
+    if not config['den'] and (config['apply_linearization'] or config['use_delta_method']
+                              or config['weight_method'] != 'uniform'):
+        return False
+    try:
+        check_exp_params(get_exp_params(config))
+    except ValueError:
+        return False
+    return True
 
 def construct_exp_configs(metric_num, metric_den=None,
-                          weight_methods=['uniform'], apply_linearization=[False], use_delta_method=[False],
-                          stat_methods=['t_test'],
-                          use_stratification=[False], strats_cols=[],
-                          var_reduction_methods=[None], var_reduction_covariates=[],
-                          handle_outliers=[None], outliers_contamination=[0.001], outliers_cols=[]):
+                          weight_methods=('uniform',), apply_linearization=(False,), use_delta_method=(False,),
+                          stat_methods=('t_test',),
+                          use_stratification=(False,), strats_cols=None,
+                          var_reduction_methods=(None,), var_reduction_covariates=None, var_reduction_params=None,
+                          handle_outliers=(None,), outliers_contamination=(0.001,), outliers_cols=None):
     """
     Builds metric configurations for all valid combinations of the given methods.
 
     Each argument except `metric_num`, `metric_den`, `strats_cols`,
-    `var_reduction_covariates` and `outliers_cols` is a list of options.
-    Incompatible combinations (e.g., Delta Method without 'size' weights,
-    proportion test with variance reduction) are skipped.
+    `var_reduction_covariates`, `var_reduction_params` and `outliers_cols` is a list of options.
+    Incompatible combinations (see `results.check_exp_params`, e.g., Delta Method
+    without 'size' weights, proportion test with variance reduction) are skipped,
+    as well as ratio options for a metric without denominator.
 
     Parameters
     ----------
@@ -29,8 +42,11 @@ def construct_exp_configs(metric_num, metric_den=None,
     weight_methods, apply_linearization, use_delta_method, stat_methods,
     use_stratification, var_reduction_methods, handle_outliers, outliers_contamination : list
         Options to combine, see `calc_exp_results` for possible values.
+        `outliers_contamination` is combined only with outliers handling.
     strats_cols, var_reduction_covariates, outliers_cols : list of str
         Columns shared by all configurations.
+    var_reduction_params : dict, optional
+        CatBoost parameters for CUPAC shared by all configurations.
 
     Returns
     -------
@@ -49,6 +65,7 @@ def construct_exp_configs(metric_num, metric_den=None,
             'apply_linearization': apl, 'use_delta_method': udm,
             'stat_method': sm, 'use_stratification': us, 'strats_cols': strats_cols,
             'var_reduction_method': vm, 'var_reduction_covariates': var_reduction_covariates,
+            'var_reduction_params': var_reduction_params,
             'handle_outliers': ho, 'outliers_contamination': oc if ho else None, 'outliers_cols': outliers_cols
         }
         for wm in weight_methods
@@ -58,21 +75,18 @@ def construct_exp_configs(metric_num, metric_den=None,
         for us in use_stratification
         for vm in var_reduction_methods
         for ho in handle_outliers
-        for oc in outliers_contamination
-        if (not (udm==True and sm != 't_test'))
-           and (not (udm==True and apl==True))
-           and (not (udm==True and wm!='size'))
-           and (not (sm=='bootstrap' and apl))
-           and (not (us and sm in ('bootstrap', 'proportion')))
-           and (not (sm=='proportion' and apl==True))
-           and (not (sm=='proportion' and udm==True))
-           and (not (sm=='proportion' and vm is not None))
-           and (not (not metric_den and (apl==True or udm==True or wm!='uniform')))
+        for oc in (outliers_contamination if ho else outliers_contamination[:1])
     ]
+    configs = [c for c in configs if _is_useful_config(c)]
 
     if not configs:
         raise ValueError("Only invalid combinations of methods can be returned. Check methods arrays.")
     return configs
+
+def _config_columns(df, config):
+    # Resampling only the columns used by the config is much cheaper for a wide dataframe
+    return select_columns(df, config['num'], config['den'], config['strats_cols'],
+                          config['var_reduction_covariates'], config['outliers_cols'])
 
 def run_aa_test_simulation(df,
                            configs,
@@ -117,6 +131,7 @@ def run_aa_test_simulation(df,
         print(f'Running A/A for config: {config}...')
         metric_num = config['num']
         metric_den = config['den']
+        df_config = _config_columns(df, config)
 
         pvalues = []
         # Repeated runs would flood the output with the same warnings
@@ -124,7 +139,7 @@ def run_aa_test_simulation(df,
             warnings.simplefilter('ignore')
             for i in tqdm(range(n_exp)):
                 group = generate_real_exp_data(
-                    df, metric_num, metric_den,
+                    df_config, metric_num, metric_den,
                     sample_size=control_sample_size + treatment_sample_size
                 )
                 group['exp_group'] = 'A1'
@@ -231,6 +246,7 @@ def run_ab_test_simulation(df,
         print(f'Running A/B for config: {config}...')
         metric_num = config['num']
         metric_den = config['den']
+        df_config = _config_columns(df, config)
 
         pvalues = []
         # Repeated runs would flood the output with the same warnings
@@ -238,13 +254,13 @@ def run_ab_test_simulation(df,
             warnings.simplefilter('ignore')
             for i in tqdm(range(n_exp)):
                 control_group = generate_real_exp_data(
-                    df, metric_num, metric_den, metric_type,
+                    df_config, metric_num, metric_den, metric_type,
                     sample_size=control_sample_size
                 )
                 control_group['exp_group'] = 'A'
 
                 treatment_group = generate_real_exp_data(
-                    df, metric_num, metric_den, metric_type,
+                    df_config, metric_num, metric_den, metric_type,
                     sample_size=treatment_sample_size,
                     uplift=uplift
                 )

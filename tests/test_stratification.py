@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from abiasales.stratification import add_strata_col, calc_strats_weights, get_strats_indexes
+from abiasales.stratification import add_strata_col, calc_strats_weights, get_strats_indexes, as_list
 
 
 @pytest.fixture
@@ -48,3 +48,12 @@ def test_input_is_not_modified(df):
     calc_strats_weights(df, ['platform'])
     get_strats_indexes(df, ['platform'])
     pd.testing.assert_frame_equal(df, before)
+
+
+def test_as_list():
+    assert as_list('a') == ['a'] and as_list(('a', 'b')) == ['a', 'b'] and as_list(None) is None
+
+
+def test_single_column_name_as_string(df):
+    assert calc_strats_weights(df, 'platform') == calc_strats_weights(df, ['platform'])
+    assert get_strats_indexes(df, 'platform').keys() == get_strats_indexes(df, ['platform']).keys()

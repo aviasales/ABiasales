@@ -4,7 +4,7 @@ import pandas as pd
 from .stats import weighted_mean, calc_std, calc_linearization_coef
 from .weights import calc_weights, calc_intra_corr_coef
 from .variance_reduction import apply_variance_reduction, apply_exp_variance_reduction
-from .stratification import get_strats_indexes, calc_strats_weights
+from .stratification import get_strats_indexes, calc_strats_weights, as_list
 
 def select_columns(df, *cols):
     """
@@ -141,7 +141,8 @@ def calc_pipeline_mean_and_std(df,
                                use_stratification=False,
                                strats_cols=None,
                                var_reduction_method=None,
-                               var_reduction_covariates=None):
+                               var_reduction_covariates=None,
+                               var_reduction_params=None):
     """
     Computes the mean and standard deviation of a metric with support for:
     - ratio metrics,
@@ -168,10 +169,13 @@ def calc_pipeline_mean_and_std(df,
         Whether to compute stratified statistics.
     strats_cols : list of str, optional
         Columns defining strata. Required if use_stratification=True.
+        With stratification, variance reduction models are also fitted per stratum.
     var_reduction_method : str or None, optional
         Method for variance reduction, e.g., 'cuped', 'cupac'.
     var_reduction_covariates : list of str, optional
         Covariates used for variance reduction.
+    var_reduction_params : dict, optional
+        Parameters of the CatBoost model for CUPAC.
 
     Returns
     -------
@@ -181,6 +185,7 @@ def calc_pipeline_mean_and_std(df,
         Estimated (weighted) standard deviation.
     """
 
+    strats_cols = as_list(strats_cols)
     df_out = select_columns(df, metric_num, metric_den, strats_cols, var_reduction_covariates)
 
     if metric_den is None:
@@ -212,7 +217,8 @@ def calc_pipeline_mean_and_std(df,
             df_out, metric_num_new,
             var_reduction_covariates,
             var_reduction_method,
-            strats_cols
+            strats_cols if use_stratification else None,
+            var_reduction_params
         )
 
     # Compute mean and std
@@ -240,6 +246,7 @@ def calc_groups_stats(df_control,
                       strats_cols=None,
                       var_reduction_method=None,
                       var_reduction_covariates=None,
+                      var_reduction_params=None,
                       strats_weights=None):
     """
     Computes mean and std for control and treatment groups with full metric processing pipeline:
@@ -269,10 +276,13 @@ def calc_groups_stats(df_control,
         Whether to apply stratified mean/std.
     strats_cols : list of str or None
         Columns defining strata (required if stratification is used).
+        With stratification, variance reduction models are also fitted per stratum.
     var_reduction_method : str or None
         Method for variance reduction ('cuped', 'cupac').
     var_reduction_covariates : list of str or None
         Covariate columns for variance reduction.
+    var_reduction_params : dict, optional
+        Parameters of the CatBoost model for CUPAC.
     strats_weights : dict, optional
         Precomputed stratum weights. By default they are computed on both groups.
 
@@ -288,6 +298,7 @@ def calc_groups_stats(df_control,
         Weights and per-unit transformed metric for treatment.
     """
 
+    strats_cols = as_list(strats_cols)
     df_a = select_columns(df_control, metric_num, metric_den, strats_cols, var_reduction_covariates)
     df_b = select_columns(df_treatment, metric_num, metric_den, strats_cols, var_reduction_covariates)
 
@@ -320,7 +331,8 @@ def calc_groups_stats(df_control,
     # VARIANCE REDUCTION
     if var_reduction_method:
         df_a[metric_num_new], df_b[metric_num_new] = apply_exp_variance_reduction(
-            df_a, df_b, metric_num_new, var_reduction_covariates, var_reduction_method, strats_cols
+            df_a, df_b, metric_num_new, var_reduction_covariates, var_reduction_method,
+            strats_cols if use_stratification else None, var_reduction_params
         )
 
 
