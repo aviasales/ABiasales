@@ -113,13 +113,29 @@ class VarianceReducer:
         return y_np - y_pred + self.mean_prediction
 
 
-def check_covariates(df, covariate_cols):
+def check_covariates(df, covariate_cols, method='cuped'):
     """
-    Raises an error if any covariate column is missing in the dataframe.
+    Raises an error if any covariate column is missing in the dataframe
+    or, for CUPED, contains missing values.
     """
     missing = [c for c in (covariate_cols or []) if c not in df.columns]
     if not covariate_cols or missing:
         raise ValueError(f"Covariates for variance reduction are not found: {missing or covariate_cols}")
+
+    # CatBoost handles missing values itself, linear regression fails on them
+    with_nan = [c for c in covariate_cols if df[c].isnull().any()] if method == 'cuped' else []
+    if with_nan:
+        raise ValueError(f"Covariates for CUPED contain missing values: {with_nan}. Fill them or use 'cupac'")
+
+
+def min_fit_size(method, n_covariates, n_folds=5):
+    """
+    Returns the minimal number of units to fit a variance reduction model.
+
+    On smaller samples the model is overfitted, so the variance of the
+    adjusted metric is underestimated.
+    """
+    return max(10, 2 * (n_covariates + 1), n_folds if method == 'cupac' else 0)
 
 
 def apply_variance_reduction(df, target_col, covariate_cols, method='cuped', strats_cols=None):
@@ -146,11 +162,10 @@ def apply_variance_reduction(df, target_col, covariate_cols, method='cuped', str
 
     Notes
     -----
-    If the model can not be fitted (e.g., a stratum is too small), the target
-    is left unchanged for the affected rows and a warning is issued.
+    Strata smaller than `min_fit_size` are left unchanged and a warning is issued.
     """
 
-    check_covariates(df, covariate_cols)
+    check_covariates(df, covariate_cols, method)
     reduced = df[target_col].to_numpy(dtype=float).copy()
 
     if strats_cols:
@@ -160,12 +175,14 @@ def apply_variance_reduction(df, target_col, covariate_cols, method='cuped', str
     else:
         strata = [(None, np.ones(len(df), dtype=bool))]
 
+    min_size = min_fit_size(method, len(covariate_cols))
     for stratum, mask in strata:
-        try:
-            reducer = VarianceReducer(method=method)
-            reduced[mask] = reducer.fit_transform(df.loc[mask, covariate_cols], df.loc[mask, target_col])
-        except Exception as e:
-            warnings.warn(f"Variance reduction is skipped for stratum {stratum}: {e}")
+        if mask.sum() < min_size:
+            warnings.warn(f"Variance reduction is skipped for stratum {stratum}: "
+                          f"{mask.sum()} units, at least {min_size} are needed")
+            continue
+        reducer = VarianceReducer(method=method)
+        reduced[mask] = reducer.fit_transform(df.loc[mask, covariate_cols], df.loc[mask, target_col])
 
     return pd.Series(reduced, index=df.index)
 
@@ -198,12 +215,12 @@ def apply_exp_variance_reduction(df_a, df_b, target_col, covariate_cols, method=
 
     Notes
     -----
-    If the model can not be fitted for a stratum (e.g., it is absent in group A),
+    If a stratum has less than `min_fit_size` units in group A (e.g., it is absent there),
     the target is left unchanged in both groups for this stratum and a warning is issued.
     """
 
-    check_covariates(df_a, covariate_cols)
-    check_covariates(df_b, covariate_cols)
+    check_covariates(df_a, covariate_cols, method)
+    check_covariates(df_b, covariate_cols, method)
 
     adjusted_a = df_a[target_col].to_numpy(dtype=float).copy()
     adjusted_b = df_b[target_col].to_numpy(dtype=float).copy()
@@ -216,14 +233,15 @@ def apply_exp_variance_reduction(df_a, df_b, target_col, covariate_cols, method=
     else:
         strata = [(None, np.ones(len(df_a), dtype=bool), np.ones(len(df_b), dtype=bool))]
 
+    min_size = min_fit_size(method, len(covariate_cols))
     for stratum, mask_a, mask_b in strata:
-        try:
-            reducer = VarianceReducer(method=method)
-            values_a = reducer.fit_transform(df_a.loc[mask_a, covariate_cols], df_a.loc[mask_a, target_col])
-            if mask_b.any():
-                adjusted_b[mask_b] = reducer.transform(df_b.loc[mask_b, covariate_cols], df_b.loc[mask_b, target_col])
-            adjusted_a[mask_a] = values_a
-        except Exception as e:
-            warnings.warn(f"Variance reduction is skipped for stratum {stratum}: {e}")
+        if mask_a.sum() < min_size:
+            warnings.warn(f"Variance reduction is skipped for stratum {stratum}: "
+                          f"{mask_a.sum()} units in group A, at least {min_size} are needed")
+            continue
+        reducer = VarianceReducer(method=method)
+        adjusted_a[mask_a] = reducer.fit_transform(df_a.loc[mask_a, covariate_cols], df_a.loc[mask_a, target_col])
+        if mask_b.any():
+            adjusted_b[mask_b] = reducer.transform(df_b.loc[mask_b, covariate_cols], df_b.loc[mask_b, target_col])
 
     return pd.Series(adjusted_a, index=df_a.index), pd.Series(adjusted_b, index=df_b.index)

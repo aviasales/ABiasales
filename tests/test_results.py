@@ -133,3 +133,13 @@ def test_styled_table_in_ipython(value_df, monkeypatch):
     calc_exp_results(df, 'g', {'v': {'num': 'value'}})
     assert len(shown) == 1
     assert 'background-color: #90ee90' in shown[0].to_html()
+
+
+def test_multigroup_stratification_uses_shared_strata_weights(rng):
+    # Regression: weights were computed per pair, so the same group had different means in different rows
+    df = make_value_df(rng, groups=('A', 'B', 'C'))
+    res = calc_exp_results(df, 'g', {'v': {'num': 'value'}}, use_stratification=True,
+                           strats_cols=['platform', 'country'], display_colored_results=False)
+    by_pair = res.set_index(['group_1', 'group_2'])
+    assert by_pair.loc[('A', 'B'), 'mean_1'] == pytest.approx(by_pair.loc[('A', 'C'), 'mean_1'])
+    assert by_pair.loc[('A', 'B'), 'mean_2'] == pytest.approx(by_pair.loc[('B', 'C'), 'mean_1'])

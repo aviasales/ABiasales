@@ -35,6 +35,17 @@ def test_abs_confint_agrees_with_pvalue(test, rng):
         assert (pvalue < 0.05) == (low > 0 or up < 0)
 
 
+@pytest.mark.parametrize('test', [calc_stattest_t_test, calc_stattest_z_test])
+def test_rel_confint_agrees_with_pvalue(test, rng):
+    # Regression: p-value came from the test of means and the relative CI from the Delta Method,
+    # so for skewed metrics they disagreed in ~9% of borderline experiments
+    for _ in range(300):
+        n1, n2 = rng.integers(30, 3000, 2)
+        a, b = np.exp(rng.normal(0, 1.5, n1)), np.exp(rng.normal(0, 1.5, n2)) * rng.uniform(0.7, 1.5)
+        pvalue, (low, up) = test(a.mean(), a.std(ddof=1), n1, b.mean(), b.std(ddof=1), n2, uplift_type='rel')
+        assert (pvalue < 0.05) == (low > 0 or up < 0)
+
+
 def test_rel_confint_contains_uplift():
     _, (low, up) = calc_stattest_t_test(10, 3, 5000, 11, 3, 5000, uplift_type='rel')
     assert low < 0.1 < up

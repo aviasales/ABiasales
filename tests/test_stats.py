@@ -3,7 +3,7 @@ import pytest
 
 from abiasales.stats import (
     weighted_mean, weighted_std, weighted_mean_std, calc_delta_method_std,
-    calc_std, calc_delta_method_ratio_confint, calc_linearization_coef
+    calc_std, calc_delta_method_ratio_confint, calc_fieller_ratio_confint, calc_linearization_coef
 )
 
 
@@ -80,3 +80,39 @@ def test_delta_method_ratio_confint_alpha_controls_width():
     narrow = calc_delta_method_ratio_confint(10, 3, 1000, 11, 3, 1000, alpha=0.2)
     wide = calc_delta_method_ratio_confint(10, 3, 1000, 11, 3, 1000, alpha=0.01)
     assert wide[0] < narrow[0] < 0.1 < narrow[1] < wide[1]
+
+
+def test_delta_method_std_on_degenerate_data():
+    # Regression: inconsistent ddof gave a negative value under the root (NaN)
+    # for a constant ratio and division by zero for a single unit
+    den = np.array([10., 20., 30., 40.])
+    assert calc_delta_method_std(0.1 * den, den) == pytest.approx(0, abs=1e-12)
+    assert calc_delta_method_std(np.array([1.]), np.array([5.])) == 0
+
+
+def test_delta_method_std_equals_size_weighted_std(rng):
+    num, den = rng.poisson(3, 500), rng.poisson(5, 500) + 1
+    assert calc_delta_method_std(num, den) == pytest.approx(weighted_mean_std(num / den, den))
+
+
+def test_delta_method_ratio_confint_is_centered_on_uplift():
+    # Regression: the "bias correction" was added with the wrong sign and shifted the interval
+    low, up = calc_delta_method_ratio_confint(10, 30, 100, 11, 30, 100)
+    assert (low + up) / 2 == pytest.approx(0.1)
+
+
+def test_fieller_confint_example_and_asymmetry():
+    low, up = calc_fieller_ratio_confint(0.10, 0.03, 1000, 0.12, 0.035, 1000)
+    assert (low, up) == pytest.approx((0.169, 0.232), abs=1e-3)
+    low, up = calc_fieller_ratio_confint(10, 30, 100, 11, 30, 100)
+    assert up - 0.1 > 0.1 - low  # skewed to the right like the distribution of a ratio
+
+
+def test_fieller_confint_matches_delta_for_large_samples():
+    fieller = calc_fieller_ratio_confint(10, 3, 10 ** 6, 11, 3, 10 ** 6)
+    delta = calc_delta_method_ratio_confint(10, 3, 10 ** 6, 11, 3, 10 ** 6)
+    assert fieller == pytest.approx(delta, abs=1e-5)
+
+
+def test_fieller_confint_is_unbounded_for_control_mean_near_zero():
+    assert calc_fieller_ratio_confint(0.01, 1, 100, 1, 1, 100) == (-np.inf, np.inf)

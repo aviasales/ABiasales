@@ -25,6 +25,16 @@ def select_columns(df, *cols):
 
     return df[names].copy()
 
+def valid_metric_mask(df, metric_num, metric_den=None):
+    """
+    Returns a boolean mask of rows where the metric is defined:
+    the numerator is not null and the denominator is not null and not zero.
+    """
+    mask = df[metric_num].notnull()
+    if metric_den:
+        mask &= df[metric_den].notnull() & (df[metric_den] != 0)
+    return mask
+
 def _free_column_name(df, name):
     """
     Returns `name`, prefixed with underscores if needed, so that it is not a column of the dataframe.
@@ -229,7 +239,8 @@ def calc_groups_stats(df_control,
                       use_stratification=False,
                       strats_cols=None,
                       var_reduction_method=None,
-                      var_reduction_covariates=None):
+                      var_reduction_covariates=None,
+                      strats_weights=None):
     """
     Computes mean and std for control and treatment groups with full metric processing pipeline:
     - Optional variance reduction (CUPED/CUPAC)
@@ -262,6 +273,8 @@ def calc_groups_stats(df_control,
         Method for variance reduction ('cuped', 'cupac').
     var_reduction_covariates : list of str or None
         Covariate columns for variance reduction.
+    strats_weights : dict, optional
+        Precomputed stratum weights. By default they are computed on both groups.
 
     Returns
     -------
@@ -313,7 +326,8 @@ def calc_groups_stats(df_control,
 
     # SAMPLE STAT
 
-    strats_weights = calc_strats_weights(pd.concat([df_a[strats_cols], df_b[strats_cols]]), strats_cols) if strats_cols else None
+    if use_stratification and strats_weights is None:
+        strats_weights = calc_strats_weights(pd.concat([df_a[strats_cols], df_b[strats_cols]]), strats_cols)
 
     mean_a, std_a = calc_mean_and_std(
         df_a,

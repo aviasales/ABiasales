@@ -2,7 +2,7 @@ import numpy as np
 import scipy.stats
 import pandas as pd
 from statsmodels.stats.proportion import test_proportions_2indep, confint_proportions_2indep, proportions_ztest
-from .stats import calc_delta_method_ratio_confint
+from .stats import calc_fieller_ratio_confint
 
 def check_groups_distribution(df, exp_group_col, control_name='A', control_perc=0.5):
     """
@@ -149,7 +149,8 @@ def calc_stattest_z_test(mean_1, std_1, nobs_1, mean_2, std_2, nobs_2, uplift_ty
 
     Notes
     -----
-    - For relative uplift, uses Delta Method-based confidence interval.
+    - For relative uplift, uses Fieller's confidence interval: it excludes 0
+      exactly when the p-value is below `confint_alpha`.
     - Uses unpooled standard error for absolute CI.
 
     Example
@@ -168,7 +169,7 @@ def calc_stattest_z_test(mean_1, std_1, nobs_1, mean_2, std_2, nobs_2, uplift_ty
         quantile = scipy.stats.norm.ppf(1 - confint_alpha / 2)
         confint = (diff - quantile * se, diff + quantile * se)
     elif uplift_type=='rel':
-        confint = calc_delta_method_ratio_confint(
+        confint = calc_fieller_ratio_confint(
             mean_1=mean_1,
             std_1=std_1,
             nobs_1=nobs_1,
@@ -218,9 +219,10 @@ def calc_stattest_t_test(mean_1, std_1, nobs_1, mean_2, std_2, nobs_2, uplift_ty
     -----
     - Uses Welch's t-test (unequal variances), so the test stays valid
       for unequal group sizes and variances.
-    - For relative uplift, uses Delta Method-based confidence interval.
     - Absolute CI uses the same unpooled standard error and Welch–Satterthwaite
       degrees of freedom as the test, so CI and p-value agree.
+    - Relative CI is Fieller's interval with the same degrees of freedom,
+      so it also agrees with the p-value.
 
     Example
     -------
@@ -238,22 +240,24 @@ def calc_stattest_t_test(mean_1, std_1, nobs_1, mean_2, std_2, nobs_2, uplift_ty
         equal_var=False
     ).pvalue
 
+    var_1, var_2 = std_1**2 / nobs_1, std_2**2 / nobs_2
+    dof = (var_1 + var_2)**2 / (var_1**2 / (nobs_1 - 1) + var_2**2 / (nobs_2 - 1))
+
     if uplift_type=='abs':
-        var_1, var_2 = std_1**2 / nobs_1, std_2**2 / nobs_2
         se = np.sqrt(var_1 + var_2)
-        dof = (var_1 + var_2)**2 / (var_1**2 / (nobs_1 - 1) + var_2**2 / (nobs_2 - 1))
         quantile = scipy.stats.t.ppf(1 - confint_alpha / 2, dof)
         diff = mean_2 - mean_1
         confint = (diff - quantile * se, diff + quantile * se)
     elif uplift_type=='rel':
-        confint = calc_delta_method_ratio_confint(
+        confint = calc_fieller_ratio_confint(
             mean_1=mean_1,
             std_1=std_1,
             nobs_1=nobs_1,
             mean_2=mean_2,
             std_2=std_2,
             nobs_2=nobs_2,
-            alpha=confint_alpha
+            alpha=confint_alpha,
+            dof=dof
         )
 
     return pvalue, confint

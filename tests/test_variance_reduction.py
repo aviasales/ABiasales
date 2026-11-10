@@ -31,6 +31,36 @@ def test_missing_covariates_raise(value_df):
         apply_exp_variance_reduction(value_df, value_df, 'value', None)
 
 
+def test_missing_values_in_cuped_covariates_raise(value_df):
+    # Regression: the fit error was caught and CUPED was silently not applied
+    df = value_df.copy()
+    df.loc[5, 'cov'] = np.nan
+    with pytest.raises(ValueError, match='missing values'):
+        apply_exp_variance_reduction(df, df, 'value', ['cov'])
+
+
+def test_cupac_supports_missing_covariates(value_df, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    df = value_df.copy()
+    df.loc[::10, 'cov'] = np.nan
+    adjusted = VarianceReducer('cupac', model_params={'iterations': 20}).fit_transform(df[['cov']], df['value'])
+    assert np.isfinite(adjusted).all() and adjusted.var() < df['value'].var()
+
+
+def test_small_stratum_is_skipped(value_df):
+    df = value_df.copy()
+    df.loc[:4, 'platform'] = 'tiny'
+    with pytest.warns(UserWarning, match="'tiny'.*5 units"):
+        reduced = apply_variance_reduction(df, 'value', ['cov'], strats_cols=['platform'])
+    np.testing.assert_allclose(reduced[:5], df.loc[:4, 'value'])
+    assert reduced[5:].var() < 0.5 * df.loc[5:, 'value'].var()
+
+
+def test_fit_errors_are_not_hidden(value_df):
+    with pytest.raises(ValueError):
+        apply_exp_variance_reduction(value_df, value_df, 'value', ['platform'])
+
+
 def test_stratified_reduction_keeps_index(value_df):
     df = value_df.set_index(np.arange(len(value_df)) * 3)
     reduced = apply_variance_reduction(df, 'value', ['cov'], strats_cols=['platform'])

@@ -1,7 +1,8 @@
 import pandas as pd
 from statsmodels.stats.multitest import multipletests
 from .cleaning import remove_outliers, cap_above_quantile
-from .metrics import calc_groups_stats, select_columns
+from .metrics import calc_groups_stats, select_columns, valid_metric_mask
+from .stratification import calc_strats_weights
 from .inference import calc_stattest
 
 def display_table(df, style=None):
@@ -87,6 +88,10 @@ def get_exp_params(metric_dict):
 
     return params
 
+def _strata_settings(metric_dict, use_stratification, strats_cols):
+    # A metric config can override the stratification settings of the experiment
+    return metric_dict.get('use_stratification', use_stratification), metric_dict.get('strats_cols', strats_cols)
+
 def check_exp_params(params, use_stratification=False):
     """
     Validates a combination of metric analysis parameters.
@@ -134,7 +139,7 @@ def check_exp_params(params, use_stratification=False):
 
 def calc_exp_stattest(df, exp_group_col, eg1, eg2, metric_dict,
                       use_stratification=False, strats_cols=None,
-                      confint_alpha=0.05, n_bootstrap=500):
+                      confint_alpha=0.05, n_bootstrap=500, strats_weights=None):
     """
     Computes the statistical results of a single A/B experiment, including
     uplift, confidence intervals, and p-value.
@@ -171,6 +176,9 @@ def calc_exp_stattest(df, exp_group_col, eg1, eg2, metric_dict,
         Significance level for the confidence interval (e.g., 0.05 → 95% CI).
     n_bootstrap : int, default=500
         Number of bootstrap iterations (only used when bootstrap is the chosen test method).
+    strats_weights : dict, optional
+        Precomputed stratum weights, e.g. shared by all pairs of groups.
+        By default they are computed on the two compared groups.
 
     Returns
     -------
@@ -185,17 +193,13 @@ def calc_exp_stattest(df, exp_group_col, eg1, eg2, metric_dict,
     """
     
     params = get_exp_params(metric_dict)
-    use_stratification = metric_dict.get('use_stratification', use_stratification)
-    strats_cols = metric_dict.get('strats_cols', strats_cols)
+    use_stratification, strats_cols = _strata_settings(metric_dict, use_stratification, strats_cols)
     check_exp_params(params, use_stratification)
 
     columns = [exp_group_col, params['num'], params['den'], strats_cols,
                params['var_reduction_covariates'], params['outliers_cols']]
-    mask = df[exp_group_col].isin([eg1, eg2]) & df[params['num']].notnull()
+    mask = df[exp_group_col].isin([eg1, eg2]) & valid_metric_mask(df, params['num'], params['den'])
     df_exp = select_columns(df, *columns)[mask]
-
-    if params['den']:
-        df_exp = df_exp[(df_exp[params['den']].notnull()) & (df_exp[params['den']] != 0)]
 
     if params['handle_outliers']=='remove':
         outliers_cols = params['outliers_cols'] or [c for c in (params['num'], params['den']) if c]
@@ -222,7 +226,8 @@ def calc_exp_stattest(df, exp_group_col, eg1, eg2, metric_dict,
         use_stratification=use_stratification,
         strats_cols=strats_cols,
         var_reduction_method=params['var_reduction_method'],
-        var_reduction_covariates=params['var_reduction_covariates']
+        var_reduction_covariates=params['var_reduction_covariates'],
+        strats_weights=strats_weights
     )
 
     return calc_stattest(
@@ -291,6 +296,14 @@ def calc_exp_results(df, exp_group_col, metrics,
     results = []
 
     for m in metrics:
+        # Stratum weights are shared by all pairs of groups, so a group has the same mean in every comparison
+        strats_weights = None
+        metric_stratification, metric_strats_cols = _strata_settings(metrics[m], use_stratification, strats_cols)
+        if metric_stratification and metric_strats_cols:
+            params = get_exp_params(metrics[m])
+            valid = df[exp_group_col].notnull() & valid_metric_mask(df, params['num'], params['den'])
+            strats_weights = calc_strats_weights(df[valid], metric_strats_cols)
+
         for i in range(len(exp_groups)):
             for j in range(i, len(exp_groups)):
                 if i==j:
@@ -301,7 +314,7 @@ def calc_exp_results(df, exp_group_col, metrics,
                 exp_results = calc_exp_stattest(
                     df, exp_group_col, eg_1, eg_2, metrics[m],
                     use_stratification, strats_cols,
-                    confint_alpha, n_bootstrap
+                    confint_alpha, n_bootstrap, strats_weights
                 )
                 
                 df_description = pd.DataFrame({
