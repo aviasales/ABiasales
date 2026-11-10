@@ -99,12 +99,26 @@ def test_cupac_uses_out_of_fold_predictions(rng, tmp_path, monkeypatch):
     n = 1000
     df = pd.DataFrame(rng.normal(size=(n, 5)), columns=[f'c{i}' for i in range(5)])
     df['y'] = rng.normal(size=n)
-    reducer = VarianceReducer('cupac', model_params={'iterations': 300, 'depth': 6})
-    in_sample = reducer.fit(df.filter(like='c'), df['y']).transform(df.filter(like='c'), df['y'])
-    out_of_fold = reducer.fit_transform(df.filter(like='c'), df['y'])
-    assert in_sample.var() < 0.9 * df['y'].var()
+    out_of_fold = VarianceReducer('cupac', model_params={'iterations': 300, 'depth': 6}).fit_transform(
+        df.filter(like='c'), df['y'])
     assert out_of_fold.var() > 0.95 * df['y'].var()
     assert not os.path.exists(tmp_path / 'catboost_info')
+
+
+def test_cupac_noisy_predictions_do_not_increase_variance(rng, tmp_path, monkeypatch):
+    # Regression: out-of-fold predictions were subtracted as is and added their noise to the target
+    pytest.importorskip('catboost')
+    monkeypatch.chdir(tmp_path)
+    n = 1000
+    df = pd.DataFrame(rng.normal(size=(n, 5)), columns=[f'c{i}' for i in range(5)])
+    df['y'] = rng.normal(size=n)
+    x = df.filter(like='c')
+    reducer = VarianceReducer('cupac', model_params={'iterations': 300, 'depth': 6})
+    adjusted = reducer.fit_transform(x, df['y'])
+    assert adjusted.var() <= df['y'].var()
+    assert abs(reducer.theta) < 0.5
+    expected = df['y'] - reducer.theta * (reducer.predict(x) - reducer.mean_prediction)
+    np.testing.assert_allclose(reducer.transform(x, df['y']), expected)
 
 
 def test_cupac_reduces_variance_with_nonlinear_signal(rng, tmp_path, monkeypatch):

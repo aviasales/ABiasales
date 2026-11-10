@@ -22,6 +22,8 @@ class VarianceReducer:
         Trained models: one LinearRegression for CUPED, `n_folds` CatBoostRegressor for CUPAC.
     mean_prediction : float
         Mean of predictions on training data; used to preserve scale.
+    theta : float
+        Slope of the target on the training predictions; the predictions are scaled by it.
     """
 
     def __init__(self, method='cuped', model_params=None, n_folds=5):
@@ -32,6 +34,7 @@ class VarianceReducer:
         self.n_folds = n_folds
         self.models = None
         self.mean_prediction = None
+        self.theta = None
         self._train_prediction = None
 
     def _make_model(self):
@@ -64,6 +67,11 @@ class VarianceReducer:
         For CUPAC, `n_folds` models are cross-fitted: each one predicts the fold
         it was not trained on. In-sample predictions of a flexible model are
         overfitted and would artificially shrink the variance of the training group.
+
+        Out-of-fold predictions are noisy, and subtracting them as is adds their noise
+        to the target. So, as in CUPED with the prediction as the covariate, they are
+        scaled by `theta` = Cov(y, prediction) / Var(prediction), which never increases
+        the variance of the training data. For CUPED `theta` = 1.
         """
         X_np, y_np = np.asarray(X), np.asarray(y, dtype=float)
 
@@ -79,6 +87,9 @@ class VarianceReducer:
                 self.models.append(model)
 
         self.mean_prediction = np.mean(self._train_prediction)
+        var_prediction = np.var(self._train_prediction)
+        self.theta = (np.cov(y_np, self._train_prediction, bias=True)[0, 1] / var_prediction
+                      if var_prediction > 0 else 0.0)
         return self
 
     def predict(self, X):
@@ -104,7 +115,7 @@ class VarianceReducer:
         adjusted_y : np.ndarray
             Variance-reduced target values.
         """
-        return np.asarray(y, dtype=float) - self.predict(X) + self.mean_prediction
+        return np.asarray(y, dtype=float) - self.theta * (self.predict(X) - self.mean_prediction)
 
     def fit_transform(self, X, y):
         """
@@ -127,7 +138,7 @@ class VarianceReducer:
         For CUPAC the training data is transformed with out-of-fold predictions, see `fit`.
         """
         self.fit(X, y)
-        return np.asarray(y, dtype=float) - self._train_prediction + self.mean_prediction
+        return np.asarray(y, dtype=float) - self.theta * (self._train_prediction - self.mean_prediction)
 
 
 def check_covariates(df, covariate_cols, method='cuped'):
