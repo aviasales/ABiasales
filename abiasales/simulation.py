@@ -121,10 +121,8 @@ def run_aa_test_simulation(df,
 
         x = np.linspace(0, 1, len(pvalues))
 
-        try:
-            fpr_auc = np.trapz(y=x - np.sort(pvalues), x=x) + 0.5
-        except:
-            fpr_auc = np.trapezoid(y=x - np.sort(pvalues), x=x) + 0.5
+        trapezoid = getattr(np, 'trapezoid', None) or np.trapz  # np.trapz is removed in numpy 2
+        fpr_auc = trapezoid(y=x - np.sort(pvalues), x=x) + 0.5
 
         if config['den']:
             results.append({

@@ -3,7 +3,7 @@ import pandas as pd
 import scipy.stats
 from statsmodels.stats.multitest import multipletests
 from .cleaning import remove_outliers, cap_above_quantile
-from .metrics import calc_groups_stats
+from .metrics import calc_groups_stats, select_columns
 from .inference import calc_stattest
 
 def display_table(df, style=None):
@@ -154,7 +154,10 @@ def calc_exp_stattest(df, exp_group_col, eg1, eg2, metric_dict,
     strats_cols = metric_dict.get('strats_cols', strats_cols)
     check_exp_params(params, use_stratification)
 
-    df_exp = df[(df[exp_group_col].isin([eg1, eg2])) & (df[params['num']].notnull())].copy()
+    columns = [exp_group_col, params['num'], params['den'], strats_cols,
+               params['var_reduction_covariates'], params['outliers_cols']]
+    mask = df[exp_group_col].isin([eg1, eg2]) & df[params['num']].notnull()
+    df_exp = select_columns(df, *columns)[mask]
 
     if params['den']:
         df_exp = df_exp[(df_exp[params['den']].notnull()) & (df_exp[params['den']] != 0)]
@@ -167,11 +170,11 @@ def calc_exp_stattest(df, exp_group_col, eg1, eg2, metric_dict,
             contamination=params['outliers_contamination']
         ).reset_index(drop=True)
     elif params['handle_outliers']=='cap':
-        df_exp[params['num']] = cap_above_quantile(
+        df_exp = df_exp.assign(**{params['num']: cap_above_quantile(
             df_exp,
             metrics=[params['num']],
             q=1-params['outliers_contamination']
-        )
+        )[params['num']]})
 
     mean_1, std_1, weights_1, ratios_1, mean_2, std_2, weights_2, ratios_2 = calc_groups_stats(
         df_exp[df_exp[exp_group_col]==eg1],

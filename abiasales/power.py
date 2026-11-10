@@ -102,8 +102,13 @@ def calc_power_table(df,
         var_reduction_covariates=var_reduction_covariates
     )
 
+    # Linearized metric has zero mean, so the effect is scaled by the mean of the original ratio
     if apply_linearization:
         weights = calc_weights(df_exp[metric_num], df_exp[metric_den], weight_method)
+        r0 = calc_linearization_coef(df_exp[metric_num], df_exp[metric_den], weights)
+        base = r0 * weighted_mean(df_exp[metric_den], weights)
+    else:
+        base = mean
 
     r = (1 - control_perc) / control_perc
     data_ = []
@@ -116,14 +121,7 @@ def calc_power_table(df,
         for a in alpha:
             for p in power:
                 for u in uplift:
-                    if apply_linearization:
-                        r0 = calc_linearization_coef(df_exp[metric_num], df_exp[metric_den], weights)
-                        mu_den = weighted_mean(df_exp[metric_den], weights)
-                        diff = u * r0 * mu_den
-                    else:
-                        diff = mean * u
-
-                    h = diff / std
+                    h = base * u / std
                     n = int(np.ceil(tt_ind_solve_power(effect_size=h, alpha=a, power=p, ratio=r, alternative='two-sided')))
                     data_.append({error_col: f"({a}; {round(1 - p, 2)})", 'Effect': u, '': n})
                     if return_power_list:
@@ -137,12 +135,7 @@ def calc_power_table(df,
             for p in power:
                 for s in sample_size:
                     h = tt_ind_solve_power(nobs1=s, alpha=a, power=p, ratio=r, alternative='two-sided')
-                    if apply_linearization:
-                        r0 = calc_linearization_coef(df_exp[metric_num], df_exp[metric_den], weights)
-                        mu_den = weighted_mean(df_exp[metric_den], weights)
-                        mde = h * std / (r0 * mu_den)
-                    else:
-                        mde = h * std / mean
+                    mde = h * std / base
 
                     data_.append({error_col: f"({a}; {round(1 - p, 2)})", 'Sample size': s, '': str(round(mde * 100, 1)) + '%'})
                     if return_power_list:

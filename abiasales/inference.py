@@ -259,7 +259,25 @@ def calc_stattest_t_test(mean_1, std_1, nobs_1, mean_2, std_2, nobs_2, uplift_ty
     return pvalue, confint
 
 
-def calc_stattest_bootstrap(metric_1, weights_1, metric_2, weights_2, uplift_type='rel', confint_alpha=0.05, n_bootstrap=500):
+def _poisson_bootstrap_means(metric, weights, n_bootstrap, rng, max_cells=8_000_000):
+    """
+    Computes weighted means of `metric` over Poisson bootstrap samples.
+
+    Resampling weights are generated in chunks of at most `max_cells` values
+    to keep memory bounded for large samples.
+    """
+    stacked = np.column_stack([metric * weights, weights])
+    chunk = max(1, max_cells // metric.size)
+    sums = np.empty((n_bootstrap, 2))
+    for start in range(0, n_bootstrap, chunk):
+        stop = min(start + chunk, n_bootstrap)
+        sums[start:stop] = rng.poisson(1, (stop - start, metric.size)) @ stacked
+
+    return sums[:, 0] / sums[:, 1]
+
+
+def calc_stattest_bootstrap(metric_1, weights_1, metric_2, weights_2, uplift_type='rel', confint_alpha=0.05,
+                            n_bootstrap=500, random_state=None):
     """
     Estimates p-value and confidence interval for uplift using Poisson bootstrap.
 
@@ -285,6 +303,8 @@ def calc_stattest_bootstrap(metric_1, weights_1, metric_2, weights_2, uplift_typ
         Significance level for the confidence interval (e.g., 0.05 = 95% CI).
     n_bootstrap : int, default=500
         Number of bootstrap iterations to perform.
+    random_state : int, np.random.Generator or None, default=None
+        Seed or generator for reproducible resampling.
 
     Returns
     -------
@@ -296,6 +316,7 @@ def calc_stattest_bootstrap(metric_1, weights_1, metric_2, weights_2, uplift_typ
     Notes
     -----
     - Uses Poisson(1) resampling weights for each observation in each bootstrap draw.
+      Draws are generated in chunks, so memory does not grow with `n_bootstrap`.
     - The metric is aggregated using weighted average: sum(metric * weight) / sum(weights)
     - Relative uplift is computed as (treatment / control - 1).
     - p-value is computed as double the minimum tail probability (two-sided test).
@@ -306,51 +327,33 @@ def calc_stattest_bootstrap(metric_1, weights_1, metric_2, weights_2, uplift_typ
     (0.04, (0.05, 0.28))
     """
 
-    if weights_1 is not None:
-        np_weights_1 = np.array(weights_1)
-    else:
-        np_weights_1 = np.ones(metric_1.size)
+    rng = np.random.default_rng(random_state)
+    np_metric_1 = np.asarray(metric_1, dtype=float)
+    np_metric_2 = np.asarray(metric_2, dtype=float)
+    np_weights_1 = np.ones(np_metric_1.size) if weights_1 is None else np.asarray(weights_1, dtype=float)
+    np_weights_2 = np.ones(np_metric_2.size) if weights_2 is None else np.asarray(weights_2, dtype=float)
 
-    if weights_2 is not None:
-        np_weights_2 = np.array(weights_2)
-    else:
-        np_weights_2 = np.ones(metric_2.size)
-
-    
     # POISSON BOOTSTRAP
-    poisson_bootstraps_1 = (
-        scipy.stats.poisson(1)
-        .rvs((n_bootstrap, metric_1.size))
-        .astype(int)
-    )
-    poisson_bootstraps_2 = (
-        scipy.stats.poisson(1)
-        .rvs((n_bootstrap, metric_2.size))
-        .astype(int)
-    )
+    means_1 = _poisson_bootstrap_means(np_metric_1, np_weights_1, n_bootstrap, rng)
+    means_2 = _poisson_bootstrap_means(np_metric_2, np_weights_2, n_bootstrap, rng)
 
-    values_1 = np.matmul(metric_1 * np_weights_1, poisson_bootstraps_1.T)
-    sum_weights_1 = np.matmul(np_weights_1, poisson_bootstraps_1.T)
+    deltas = means_2 - means_1
 
-    values_2 = np.matmul(metric_2 * np_weights_2, poisson_bootstraps_2.T)
-    sum_weights_2 = np.matmul(np_weights_2, poisson_bootstraps_2.T)
-
-    deltas = values_2 / sum_weights_2 - values_1 / sum_weights_1
-    
     positions = np.sum(deltas < 0)
     pvalue = 2 * np.minimum(positions, n_bootstrap - positions) / n_bootstrap
-        
+
     if uplift_type=='rel':
-        deltas = (values_2 / sum_weights_2) / (values_1 / sum_weights_1) - 1
-        
+        deltas = means_2 / means_1 - 1
+
     ci_low = np.quantile(a=deltas, q=confint_alpha / 2)
     ci_upp = np.quantile(a=deltas, q=1 - confint_alpha / 2)
-        
+
     return pvalue, (ci_low, ci_upp)
 
 def calc_stattest(mean_1=None, std_1=None, nobs_1=None, weights_1=None, metric_1=None,
                   mean_2=None, std_2=None, nobs_2=None, weights_2=None, metric_2=None,
-                  stat_method='t_test', uplift_type='rel', confint_alpha=0.05, n_bootstrap=500):
+                  stat_method='t_test', uplift_type='rel', confint_alpha=0.05, n_bootstrap=500,
+                  random_state=None):
     """
     Calculates statistical significance and confidence intervals for uplift between two groups.
 
@@ -386,6 +389,8 @@ def calc_stattest(mean_1=None, std_1=None, nobs_1=None, weights_1=None, metric_1
         Significance level for confidence interval.
     n_bootstrap : int, default=500
         Number of bootstrap iterations.
+    random_state : int, np.random.Generator or None, default=None
+        Seed for the bootstrap resampling.
 
     Returns
     -------
@@ -422,7 +427,7 @@ def calc_stattest(mean_1=None, std_1=None, nobs_1=None, weights_1=None, metric_1
     elif stat_method == 'bootstrap':
         pvalue, confint = calc_stattest_bootstrap(metric_1, weights_1,
                                                   metric_2, weights_2,
-                                                  uplift_type, confint_alpha, n_bootstrap)
+                                                  uplift_type, confint_alpha, n_bootstrap, random_state)
     else:
         raise ValueError(f"Unsupported stat_method: {stat_method}")
 

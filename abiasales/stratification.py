@@ -1,6 +1,11 @@
 import numpy as np
 import pandas as pd
 
+def _as_tuple(stratum):
+    # groupby returns scalar keys for a single column and tuples for several
+    return stratum if isinstance(stratum, tuple) else (stratum,)
+
+
 def add_strata_col(df, strats_cols):
     """
     Adds a unified strata column to the dataframe based on multiple stratification columns.
@@ -49,12 +54,10 @@ def calc_strats_weights(df, strats_cols):
     for each unique stratum s.
     """
 
-    df_out = df.copy()
-    add_strata_col(df_out, strats_cols)
-    strats = df_out['unified_strata'].unique()
-    strats_weights = {s: (df_out['unified_strata']==s).mean() for s in strats}
+    counts = df.groupby(list(strats_cols), dropna=False).size()
+    weights = counts / counts.sum()
 
-    return strats_weights
+    return {_as_tuple(s): w for s, w in weights.items()}
 
 
 def get_strats_indexes(df, strats_cols):
@@ -71,14 +74,13 @@ def get_strats_indexes(df, strats_cols):
     Returns
     -------
     dict
-        Mapping from each stratum (tuple) to a list of row indices (np.ndarray).
+        Mapping from each stratum (tuple) to an array of row positions (np.ndarray).
 
     Notes
     -----
     Useful for applying computations separately per stratum.
     """
 
-    df_out = df.copy()
-    add_strata_col(df_out, strats_cols)
+    indexes = df.groupby(list(strats_cols), dropna=False).indices
 
-    return df_out.groupby('unified_strata').groups
+    return {_as_tuple(s): idx for s, idx in indexes.items()}

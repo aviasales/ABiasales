@@ -6,6 +6,25 @@ from .weights import calc_weights, calc_intra_corr_coef
 from .variance_reduction import apply_variance_reduction, apply_exp_variance_reduction
 from .stratification import get_strats_indexes, calc_strats_weights
 
+def select_columns(df, *cols):
+    """
+    Returns a copy of the dataframe with only the given columns (None and lists are flattened).
+
+    Copying only the columns used by the pipeline is much cheaper than
+    copying a wide dataframe.
+    """
+    names = []
+    for c in cols:
+        for name in (c if isinstance(c, (list, tuple)) else [c]):
+            if name is not None and name not in names:
+                names.append(name)
+
+    missing = [name for name in names if name not in df.columns]
+    if missing:
+        raise KeyError(f"Columns are not found in the dataframe: {missing}")
+
+    return df[names].copy()
+
 def calc_mean_and_std(df,
                       metric_num,
                       metric_den=None,
@@ -41,24 +60,22 @@ def calc_mean_and_std(df,
     std : float
         Standard deviation of the metric (stratified or total).
     """
-    df_out = df.copy().reset_index(drop=True)
-
-    num = np.asarray(df_out[metric_num])
+    num = np.asarray(df[metric_num])
     if metric_den:
-        den = np.asarray(df_out[metric_den])
+        den = np.asarray(df[metric_den])
     else:
-        den = np.ones(len(df_out))
+        den = np.ones(len(df))
 
     if metric_weight:
-        weights = np.asarray(df_out[metric_weight])
+        weights = np.asarray(df[metric_weight])
     else:
-        weights = np.ones(len(df_out))
+        weights = np.ones(len(df))
 
     if use_stratification:
         if strats_weights is None:
-            strats_weights = calc_strats_weights(df_out, strats_cols)
+            strats_weights = calc_strats_weights(df, strats_cols)
 
-        strats_indexes = get_strats_indexes(df_out, strats_cols)
+        strats_indexes = get_strats_indexes(df, strats_cols)
 
         total_mean = 0
         total_var = 0
@@ -73,7 +90,7 @@ def calc_mean_and_std(df,
             strata_mean = weighted_mean(strata_num / strata_den, strata_weights)
             strata_std = calc_std(strata_num, strata_den, strata_weights, use_delta_method)
 
-            if np.isnan(strata_mean) or np.isnan(strata_std):
+            if np.isnan(strata_mean) or np.isnan(strata_std) or s not in strats_weights:
                 continue
 
             total_mean += strats_weights[s] * strata_mean
@@ -144,7 +161,7 @@ def calc_pipeline_mean_and_std(df,
         Estimated (weighted) standard deviation.
     """
 
-    df_out = df.copy()
+    df_out = select_columns(df, metric_num, metric_den, strats_cols, var_reduction_covariates)
 
     if metric_den is None:
         metric_den = '_den_tmp'
@@ -247,8 +264,8 @@ def calc_groups_stats(df_control,
         Weights and per-unit transformed metric for treatment.
     """
 
-    df_a = df_control.copy()
-    df_b = df_treatment.copy()
+    df_a = select_columns(df_control, metric_num, metric_den, strats_cols, var_reduction_covariates)
+    df_b = select_columns(df_treatment, metric_num, metric_den, strats_cols, var_reduction_covariates)
 
     if metric_den is None:
         metric_den = '_den_tmp'
@@ -285,7 +302,7 @@ def calc_groups_stats(df_control,
 
     # SAMPLE STAT
 
-    strats_weights = calc_strats_weights(pd.concat([df_a, df_b]), strats_cols) if strats_cols else None
+    strats_weights = calc_strats_weights(pd.concat([df_a[strats_cols], df_b[strats_cols]]), strats_cols) if strats_cols else None
 
     mean_a, std_a = calc_mean_and_std(
         df_a,
