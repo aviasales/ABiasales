@@ -214,7 +214,7 @@ def calc_delta_method_ratio_confint(
     (0.015..., 0.185...)
     """
 
-    mean_r = (mean_2 / mean_1) - 1 + (mean_2 / mean_1**3) * (std_1**2 / (nobs_1 + nobs_2))
+    mean_r = (mean_2 / mean_1) - 1 + (mean_2 / mean_1**3) * (std_1**2 / nobs_1)
     se_r = np.sqrt(
         1 / mean_1**2 * (std_2**2 / nobs_2 + mean_2**2 / mean_1**2 * std_1**2 / nobs_1)
     )

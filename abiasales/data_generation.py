@@ -82,7 +82,8 @@ def create_test_data(uplift=0.1, n_users=10000):
             
         purchases_nonzero = np.exp(scipy.stats.norm(mu*np.exp(uplift_coef), sigma).rvs(df.loc[segment_mask, 'payer_flag'].sum())).astype(np.int64)
         purchases_nonzero = np.absolute(purchases_nonzero).astype(np.int64)
-        purchases_nonzero = np.log(purchases_nonzero)
+        with np.errstate(divide='ignore'):  # log(0) = -inf is clipped to 1 below
+            purchases_nonzero = np.log(purchases_nonzero)
         purchases_nonzero = np.clip(purchases_nonzero.round(), 1, None)
         df.loc[segment_mask & (df['payer_flag']==1), 'purchases'] = purchases_nonzero
 

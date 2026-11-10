@@ -124,7 +124,7 @@ def calc_power_table(df,
                         diff = mean * u
 
                     h = diff / std
-                    n = int(tt_ind_solve_power(effect_size=h, alpha=a, power=p, ratio=r, alternative='two-sided'))
+                    n = int(np.ceil(tt_ind_solve_power(effect_size=h, alpha=a, power=p, ratio=r, alternative='two-sided')))
                     data_.append({error_col: f"({a}; {round(1 - p, 2)})", 'Effect': u, '': n})
                     if return_power_list:
                         output_power_list.append(n)
@@ -152,7 +152,7 @@ def calc_power_table(df,
         results.index = [str(s) for s in results.index]
 
     else:
-        raise ValueError("mode должен быть 'sample_size' или 'mde'")
+        raise ValueError("mode must be 'sample_size' or 'mde'")
 
     if return_power_list:
         return results, output_power_list

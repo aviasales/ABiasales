@@ -26,6 +26,10 @@ def calc_intra_corr_coef(num, den):
     where:
         - s3 : within-cluster variance
         - s2 : between-cluster variance
+
+    The formula assumes binary events within a cluster (0 <= num <= den),
+    e.g. clicks out of views. For non-binary numerators (revenue, etc.)
+    the coefficient is not meaningful.
     """
 
     num_np = np.asarray(num)
@@ -73,7 +77,7 @@ def calc_weights_intra_corr(num, den, intra_corr_coef=None):
     if (den==np.ones(den.size)).all():
         return np.ones(den.size)
 
-    if intra_corr_coef:
+    if intra_corr_coef is not None:
         rho = intra_corr_coef
     else:
         rho = calc_intra_corr_coef(num, den)

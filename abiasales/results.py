@@ -53,6 +53,51 @@ def get_exp_params(metric_dict):
 
     return params
 
+def check_exp_params(params, use_stratification=False):
+    """
+    Validates a combination of metric analysis parameters.
+
+    Parameters
+    ----------
+    params : dict
+        Metric parameters as returned by `get_exp_params`.
+    use_stratification : bool, default=False
+        Whether stratification is applied.
+
+    Raises
+    ------
+    ValueError
+        If a parameter value is unsupported or the methods are incompatible,
+        i.e. some of them would be silently ignored or give an inconsistent estimate.
+    """
+    options = {
+        'weight_method': ['uniform', 'size', 'sqrt', 'intra_corr'],
+        'stat_method': ['proportion', 'z_test', 't_test', 'bootstrap'],
+        'uplift_type': ['abs', 'rel'],
+        'var_reduction_method': [None, 'cuped', 'cupac'],
+        'handle_outliers': [None, 'remove', 'cap'],
+    }
+    for key, values in options.items():
+        if params[key] not in values:
+            raise ValueError(f"{key}='{params[key]}' is not from {values}")
+
+    errors = []
+    if params['use_delta_method'] and params['weight_method'] != 'size':
+        errors.append("Delta Method estimates the ratio of sums, so it requires weight_method='size'")
+    if params['use_delta_method'] and params['apply_linearization']:
+        errors.append("Delta Method is ignored for a linearized metric, use only one of them")
+    if params['stat_method'] == 'proportion' and (
+        params['apply_linearization'] or params['use_delta_method']
+        or params['var_reduction_method'] or use_stratification
+    ):
+        errors.append("Proportion test uses raw counts and ignores linearization, "
+                      "Delta Method, variance reduction and stratification")
+    if params['stat_method'] == 'bootstrap' and use_stratification:
+        errors.append("Bootstrap ignores stratification")
+
+    if errors:
+        raise ValueError(f"Invalid config for metric '{params['num']}': " + "; ".join(errors))
+
 def calc_exp_stattest(df, exp_group_col, eg1, eg2, metric_dict,
                       use_stratification=False, strats_cols=None,
                       confint_alpha=0.05, n_bootstrap=500):
@@ -84,8 +129,10 @@ def calc_exp_stattest(df, exp_group_col, eg1, eg2, metric_dict,
             'var_reduction_method', 'var_reduction_covariates'.
     use_stratification : bool, default=False
         Whether to apply stratification when estimating mean and standard deviation.
+        Overridden by 'use_stratification' in `metric_dict` if present.
     strats_cols : list of str, optional
         List of column names used to define strata (e.g., ['platform', 'region']).
+        Overridden by 'strats_cols' in `metric_dict` if present.
     confint_alpha : float, default=0.05
         Significance level for the confidence interval (e.g., 0.05 → 95% CI).
     n_bootstrap : int, default=500
@@ -103,13 +150,20 @@ def calc_exp_stattest(df, exp_group_col, eg1, eg2, metric_dict,
     """
     
     params = get_exp_params(metric_dict)
+    use_stratification = metric_dict.get('use_stratification', use_stratification)
+    strats_cols = metric_dict.get('strats_cols', strats_cols)
+    check_exp_params(params, use_stratification)
 
-    df_exp = df[(df[exp_group_col].isin([eg1, eg2])) & (df[params['num']].notnull())]
+    df_exp = df[(df[exp_group_col].isin([eg1, eg2])) & (df[params['num']].notnull())].copy()
+
+    if params['den']:
+        df_exp = df_exp[(df_exp[params['den']].notnull()) & (df_exp[params['den']] != 0)]
 
     if params['handle_outliers']=='remove':
+        outliers_cols = params['outliers_cols'] or [c for c in (params['num'], params['den']) if c]
         df_exp = remove_outliers(
             df_exp,
-            params['outliers_cols'],
+            outliers_cols,
             contamination=params['outliers_contamination']
         ).reset_index(drop=True)
     elif params['handle_outliers']=='cap':
@@ -118,9 +172,6 @@ def calc_exp_stattest(df, exp_group_col, eg1, eg2, metric_dict,
             metrics=[params['num']],
             q=1-params['outliers_contamination']
         )
-
-    if params['den']:
-        df_exp = df_exp[(df_exp[params['den']].notnull()) & (df_exp[params['den']] != 0)]
 
     mean_1, std_1, weights_1, ratios_1, mean_2, std_2, weights_2, ratios_2 = calc_groups_stats(
         df_exp[df_exp[exp_group_col]==eg1],
@@ -221,10 +272,9 @@ def calc_exp_results(df, exp_group_col, metrics,
                 })
                 results.append(pd.concat([df_description, exp_results], axis=1))
 
-    results = pd.concat(results)
-    results.reset_index(drop=True, inplace=True)
+    results = pd.concat(results).reset_index(drop=True)
     if len(results) > 1:
-        results.rename(columns={'pvalue': 'pvalue_init'}, inplace=True)
+        results = results.rename(columns={'pvalue': 'pvalue_init'})
         results['pvalue'] = multipletests(results['pvalue_init'], method=multitest_correction_method)[1]
 
     if display_colored_results:

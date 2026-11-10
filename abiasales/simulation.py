@@ -9,7 +9,6 @@ from .stratification import calc_strats_weights
 from .results import get_exp_params, calc_exp_stattest, display_table
 
 import warnings
-warnings.filterwarnings("ignore")
 
 def construct_exp_configs(metric_num, metric_den=None,
                           weight_methods=['uniform'], apply_linearization=[False], use_delta_method=[False],
@@ -38,7 +37,7 @@ def construct_exp_configs(metric_num, metric_den=None,
            and (not (udm==True and apl==True))
            and (not (udm==True and wm!='size'))
            and (not (sm=='bootstrap' and apl))
-           and (not (us and sm not in ('t_test', 'proportion')))
+           and (not (us and sm in ('bootstrap', 'proportion')))
            and (not (sm=='proportion' and apl==True))
            and (not (sm=='proportion' and udm==True))
            and (not (sm=='proportion' and vm is not None))
@@ -94,24 +93,27 @@ def run_aa_test_simulation(df,
         metric_den = config['den']
 
         pvalues = []
-        for i in tqdm(range(n_exp)):
-            group = generate_real_exp_data(
-                df, metric_num, metric_den,
-                sample_size=control_sample_size + treatment_sample_size
-            )
-            group['exp_group'] = 'A1'
-            group.loc[control_sample_size:, 'exp_group'] = 'A2'
+        # Repeated runs would flood the output with the same warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            for i in tqdm(range(n_exp)):
+                group = generate_real_exp_data(
+                    df, metric_num, metric_den,
+                    sample_size=control_sample_size + treatment_sample_size
+                )
+                group['exp_group'] = 'A1'
+                group.loc[control_sample_size:, 'exp_group'] = 'A2'
 
-            # Outliers are handled inside calc_exp_stattest according to config
+                # Outliers are handled inside calc_exp_stattest according to config
 
-            pvalue = calc_exp_stattest(
-                group, 'exp_group', 'A1', 'A2', config,
-                use_stratification=config['use_stratification'],
-                strats_cols=config['strats_cols'],
-                n_bootstrap=n_bootstrap
-            )['pvalue'].values[0]
+                pvalue = calc_exp_stattest(
+                    group, 'exp_group', 'A1', 'A2', config,
+                    use_stratification=config['use_stratification'],
+                    strats_cols=config['strats_cols'],
+                    n_bootstrap=n_bootstrap
+                )['pvalue'].values[0]
 
-            pvalues.append(pvalue)
+                pvalues.append(pvalue)
 
         pvalues = np.asarray(pvalues)
         # Drop failed experiments only: p-value = 0 is a valid (most significant) result
@@ -207,31 +209,34 @@ def run_ab_test_simulation(df,
         metric_den = config['den']
 
         pvalues = []
-        for i in tqdm(range(n_exp)):
-            control_group = generate_real_exp_data(
-                df, metric_num, metric_den, metric_type,
-                sample_size=control_sample_size
-            )
-            control_group['exp_group'] = 'A'
+        # Repeated runs would flood the output with the same warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            for i in tqdm(range(n_exp)):
+                control_group = generate_real_exp_data(
+                    df, metric_num, metric_den, metric_type,
+                    sample_size=control_sample_size
+                )
+                control_group['exp_group'] = 'A'
 
-            treatment_group = generate_real_exp_data(
-                df, metric_num, metric_den, metric_type,
-                sample_size=treatment_sample_size,
-                uplift=uplift
-            )
-            treatment_group['exp_group'] = 'B'
+                treatment_group = generate_real_exp_data(
+                    df, metric_num, metric_den, metric_type,
+                    sample_size=treatment_sample_size,
+                    uplift=uplift
+                )
+                treatment_group['exp_group'] = 'B'
 
-            df_exp = pd.concat([control_group, treatment_group])
+                df_exp = pd.concat([control_group, treatment_group])
 
-            # Outliers are handled inside calc_exp_stattest according to config
-            pvalue = calc_exp_stattest(
-                df_exp, 'exp_group', 'A', 'B', config,
-                use_stratification=config['use_stratification'],
-                strats_cols=config['strats_cols'],
-                n_bootstrap=n_bootstrap
-            )['pvalue'].values[0]
+                # Outliers are handled inside calc_exp_stattest according to config
+                pvalue = calc_exp_stattest(
+                    df_exp, 'exp_group', 'A', 'B', config,
+                    use_stratification=config['use_stratification'],
+                    strats_cols=config['strats_cols'],
+                    n_bootstrap=n_bootstrap
+                )['pvalue'].values[0]
 
-            pvalues.append(pvalue)
+                pvalues.append(pvalue)
 
         pvalues = np.asarray(pvalues)
         # Drop failed experiments only: p-value = 0 is a valid (most significant) result

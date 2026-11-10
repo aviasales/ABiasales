@@ -35,9 +35,9 @@ def check_groups_distribution(df, exp_group_col, control_name='A', control_perc=
     and returns a result table useful for validating proper group randomization.
     """
     
-    nobs_a = len(df.query(f"{exp_group_col}=='{control_name}'"))
+    nobs_a = (df[exp_group_col] == control_name).sum()
     nobs = len(df)
-    _, p_value = proportions_ztest(count=nobs_a, nobs=nobs, value=control_perc)
+    _, p_value = proportions_ztest(count=nobs_a, nobs=nobs, value=control_perc, prop_var=control_perc)
 
     df_out = pd.DataFrame({
         'Expected control group %': [control_perc],
@@ -86,6 +86,10 @@ def calc_stattest_proportion_test(proportion_1, proportion_2, uplift_type='rel',
     >>> calc_stattest_proportion_test([0, 1, 1, 0], [1, 1, 1, 0, 1])
     (0.317, (-0.05, 0.22))
     """
+
+    for values in (proportion_1, proportion_2):
+        if not np.isin(np.asarray(values), [0, 1]).all():
+            raise ValueError("Proportion test requires binary (0/1) values per unit")
 
     pvalue = test_proportions_2indep(
         np.sum(proportion_2), 
@@ -146,19 +150,19 @@ def calc_stattest_z_test(mean_1, std_1, nobs_1, mean_2, std_2, nobs_2, uplift_ty
     Notes
     -----
     - For relative uplift, uses Delta Method-based confidence interval.
-    - Uses pooled standard error for absolute CI.
+    - Uses unpooled standard error for absolute CI.
 
     Example
     -------
     >>> calc_stattest_z_test(100, 10, 1000, 110, 12, 1000, uplift_type='abs')
-    (0.0012, (7.1, 12.9))
+    (9.7e-91, (9.03, 10.97))
     """
 
     diff = mean_2 - mean_1
     se = np.sqrt(std_1**2 / nobs_1 + std_2**2 / nobs_2)
 
     z_stat = diff / se
-    pvalue = 2 * (1 - scipy.stats.norm.cdf(abs(z_stat)))
+    pvalue = 2 * scipy.stats.norm.sf(abs(z_stat))
 
     if uplift_type=='abs':
         quantile = scipy.stats.norm.ppf(1 - confint_alpha / 2)
@@ -212,13 +216,16 @@ def calc_stattest_t_test(mean_1, std_1, nobs_1, mean_2, std_2, nobs_2, uplift_ty
 
     Notes
     -----
+    - Uses Welch's t-test (unequal variances), so the test stays valid
+      for unequal group sizes and variances.
     - For relative uplift, uses Delta Method-based confidence interval.
-    - Uses pooled standard error for absolute CI.
+    - Absolute CI uses the same unpooled standard error and Welch–Satterthwaite
+      degrees of freedom as the test, so CI and p-value agree.
 
     Example
     -------
     >>> calc_stattest_t_test(100, 10, 1000, 110, 12, 1000, uplift_type='abs')
-    (0.0012, (7.1, 12.9))
+    (1.6e-82, (9.03, 10.97))
     """
 
     pvalue = scipy.stats.ttest_ind_from_stats(
@@ -228,12 +235,14 @@ def calc_stattest_t_test(mean_1, std_1, nobs_1, mean_2, std_2, nobs_2, uplift_ty
         mean2=mean_2,
         std2=std_2,
         nobs2=nobs_2,
-        equal_var=True
+        equal_var=False
     ).pvalue
 
     if uplift_type=='abs':
-        quantile = scipy.stats.t.ppf(1 - confint_alpha / 2, nobs_1 + nobs_2 - 2)
-        se = np.sqrt(std_1**2 / nobs_1 + std_2**2 / nobs_2)
+        var_1, var_2 = std_1**2 / nobs_1, std_2**2 / nobs_2
+        se = np.sqrt(var_1 + var_2)
+        dof = (var_1 + var_2)**2 / (var_1**2 / (nobs_1 - 1) + var_2**2 / (nobs_2 - 1))
+        quantile = scipy.stats.t.ppf(1 - confint_alpha / 2, dof)
         diff = mean_2 - mean_1
         confint = (diff - quantile * se, diff + quantile * se)
     elif uplift_type=='rel':

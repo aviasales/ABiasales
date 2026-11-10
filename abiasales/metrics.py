@@ -1,3 +1,4 @@
+import warnings
 import numpy as np
 import pandas as pd
 from .stats import weighted_mean, calc_std, calc_linearization_coef
@@ -40,7 +41,7 @@ def calc_mean_and_std(df,
     std : float
         Standard deviation of the metric (stratified or total).
     """
-    df_out = df.copy().reset_index()
+    df_out = df.copy().reset_index(drop=True)
 
     num = np.asarray(df_out[metric_num])
     if metric_den:
@@ -61,6 +62,7 @@ def calc_mean_and_std(df,
 
         total_mean = 0
         total_var = 0
+        total_weight = 0
 
         for s in strats_indexes:
 
@@ -71,10 +73,21 @@ def calc_mean_and_std(df,
             strata_mean = weighted_mean(strata_num / strata_den, strata_weights)
             strata_std = calc_std(strata_num, strata_den, strata_weights, use_delta_method)
 
-            total_mean += strats_weights[s] * np.nan_to_num(strata_mean, nan=0)
-            total_var += strats_weights[s] * np.nan_to_num(strata_std ** 2, nan=0)
+            if np.isnan(strata_mean) or np.isnan(strata_std):
+                continue
 
-        return total_mean, np.sqrt(total_var)
+            total_mean += strats_weights[s] * strata_mean
+            total_var += strats_weights[s] * strata_std ** 2
+            total_weight += strats_weights[s]
+
+        # Strata missing in the group would bias the mean towards zero, so weights are renormalized
+        if not np.isclose(total_weight, 1):
+            warnings.warn(
+                f"Strata with total weight {1 - total_weight:.2%} are missing or empty in the group, "
+                "stratum weights are renormalized"
+            )
+
+        return total_mean / total_weight, np.sqrt(total_var / total_weight)
 
     else:
         mean = weighted_mean(num / den, weights)
@@ -268,8 +281,6 @@ def calc_groups_stats(df_control,
         df_a[metric_num_new], df_b[metric_num_new] = apply_exp_variance_reduction(
             df_a, df_b, metric_num_new, var_reduction_covariates, var_reduction_method, strats_cols
         )
-        df_a[metric_num_new].fillna(0, inplace=True)
-        df_b[metric_num_new].fillna(0, inplace=True)
 
 
     # SAMPLE STAT
