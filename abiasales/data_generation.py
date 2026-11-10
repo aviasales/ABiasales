@@ -37,6 +37,16 @@ def generate_correlated_variable(base, corr_coef=0.6):
 
     return combined_scaled
 
+def _round_log_amount(log_amount):
+    """
+    Converts amounts generated on the log scale to positive integers.
+    """
+    # exp is capped so that the conversion to integers does not overflow int64
+    amount = np.exp(np.minimum(log_amount, 43)).astype(np.int64)
+    with np.errstate(divide='ignore'):  # log(0) = -inf is clipped to 1 below
+        amount = np.log(amount)
+    return np.clip(amount.round(), 1, None)
+
 def create_test_data(uplift=0.1, n_users=10000):
     """
     Generates a synthetic user-level dataset for tutorials and tests.
@@ -45,6 +55,7 @@ def create_test_data(uplift=0.1, n_users=10000):
     ----------
     uplift : float, default=0.1
         Relative shift of click and purchase rates.
+        Pre-experiment covariates do not depend on it.
     n_users : int, default=10000
         Number of users.
 
@@ -87,14 +98,21 @@ def create_test_data(uplift=0.1, n_users=10000):
 
     df['strata'] = df['platform'] + "_" + df['country']
 
-    df['clicks'] = 0.0
+    df['views'] = 0
+    df['clicks'] = 0
     df['payer_flag'] = 0
     df['purchases'] = 0
 
-    # clicks and purchases
+    # Outcomes of the same users without uplift. Covariates are generated from them,
+    # so like real pre-experiment data they do not depend on the treatment
+    clicks_pre = np.zeros(n_users)
+    purchases_pre = np.zeros(n_users)
+
+    uplift_coef = 1 + uplift
+
     for strata in strata_stats.keys():
-        segment_mask = (df['strata']==strata)
-        segment_size = len(df[segment_mask])
+        segment_mask = (df['strata']==strata).to_numpy()
+        segment_size = segment_mask.sum()
 
         skew = strata_stats[strata]['views']['skew']
         click_prob = strata_stats[strata]['clicks']['click_prob']
@@ -103,31 +121,35 @@ def create_test_data(uplift=0.1, n_users=10000):
         mu = strata_stats[strata]['purchases']['mu']
         sigma = strata_stats[strata]['purchases']['sigma']
 
-        uplift_coef = 1 + uplift
-            
         df.loc[segment_mask, 'payer_flag'] = np.where(np.random.rand(segment_size) < purchase_prob, 1, 0)
-            
-        df.loc[segment_mask, 'views'] = np.exp(scipy.stats.norm(1, skew).rvs(segment_size)).astype(np.int64) + 1
-        df.loc[segment_mask, 'views'] = np.absolute(df.loc[segment_mask, 'views']).astype(np.int64).clip(1, 100)
-            
-            
-        purchases_nonzero = np.exp(scipy.stats.norm(mu*np.exp(uplift_coef), sigma).rvs(df.loc[segment_mask, 'payer_flag'].sum())).astype(np.int64)
-        purchases_nonzero = np.absolute(purchases_nonzero).astype(np.int64)
-        with np.errstate(divide='ignore'):  # log(0) = -inf is clipped to 1 below
-            purchases_nonzero = np.log(purchases_nonzero)
-        purchases_nonzero = np.clip(purchases_nonzero.round(), 1, None)
-        df.loc[segment_mask & (df['payer_flag']==1), 'purchases'] = purchases_nonzero
 
-        alpha = click_prob * uplift_coef * beta / (1 - click_prob * uplift_coef)
-        success_rate = scipy.stats.beta(alpha, beta).rvs(len(df[segment_mask]))
-        n_values = df.loc[segment_mask, 'views'].astype(int)
-        df.loc[segment_mask, 'clicks'] = scipy.stats.binom(n=n_values, p=success_rate).rvs()
+        views = (np.exp(scipy.stats.norm(1, skew).rvs(segment_size)).astype(np.int64) + 1).clip(1, 100)
+        df.loc[segment_mask, 'views'] = views
+
+        # Purchases of payers: the uplift shifts the location of the log-amount
+        payers = segment_mask & (df['payer_flag'] == 1).to_numpy()
+        log_amount = scipy.stats.norm(mu * np.e, sigma).rvs(payers.sum())
+        purchases_pre[payers] = _round_log_amount(log_amount)
+        df.loc[payers, 'purchases'] = _round_log_amount(log_amount + mu * (np.exp(uplift_coef) - np.e))
+
+        # Clicks: the uplift scales the user-level click rate
+        alpha = click_prob * beta / (1 - click_prob)
+        rate_pre = scipy.stats.beta(alpha, beta).rvs(segment_size)
+        rate = np.clip(rate_pre * uplift_coef, 0, 1)
+        clicks = np.random.binomial(views, rate_pre)
+        clicks_pre[segment_mask] = clicks
+        # Adding (or thinning) clicks gives clicks ~ Binomial(views, rate) coupled with clicks_pre
+        if uplift_coef >= 1:
+            clicks = clicks + np.random.binomial(views - clicks, (rate - rate_pre) / (1 - rate_pre))
+        else:
+            clicks = np.random.binomial(clicks, rate / rate_pre)
+        df.loc[segment_mask, 'clicks'] = clicks
 
     # Pre-experiment covariates
     cov_corr = 0.3
     df['views_cov'] = generate_correlated_variable(df['views'], corr_coef=cov_corr)
-    df['clicks_cov'] = generate_correlated_variable(df['clicks'], corr_coef=cov_corr)
-    df['purchases_cov'] = generate_correlated_variable(df['purchases'], corr_coef=cov_corr)
+    df['clicks_cov'] = generate_correlated_variable(clicks_pre, corr_coef=cov_corr)
+    df['purchases_cov'] = generate_correlated_variable(purchases_pre, corr_coef=cov_corr)
 
     return df
 

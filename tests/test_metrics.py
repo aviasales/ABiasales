@@ -87,3 +87,27 @@ def test_pipeline_mean_and_std_matches_mean_and_std(ratio_df):
     mean, std = calc_pipeline_mean_and_std(ratio_df, 'clicks', 'views', weight_method='size')
     exp_mean, exp_std = calc_mean_and_std(ratio_df.assign(w=ratio_df['views']), 'clicks', 'views', 'w')
     assert (mean, std) == pytest.approx((exp_mean, exp_std))
+
+
+@pytest.mark.parametrize('renames, config', [
+    ({'clicks': 'weight', 'views': 'linearized_metric'}, {'weight_method': 'sqrt', 'apply_linearization': True}),
+    ({'clicks': 'linearized_metric', 'views': 'weight'}, {'weight_method': 'intra_corr'}),
+    ({'clicks_cov': 'weight'}, {'apply_linearization': True, 'var_reduction_method': 'cuped'}),
+])
+def test_service_columns_do_not_overwrite_user_columns(ratio_df, renames, config):
+    # Regression: weights were stored in a column named 'weight' and overwrote a metric with this name
+    names = {c: renames.get(c, c) for c in ['clicks', 'views', 'clicks_cov']}
+    expected = calc_groups_stats(ratio_df[ratio_df['g'] == 'A'], ratio_df[ratio_df['g'] == 'B'], 'clicks', 'views',
+                                 var_reduction_covariates=['clicks_cov'] if 'var_reduction_method' in config else None,
+                                 **config)
+    df = ratio_df.rename(columns=renames)
+    actual = calc_groups_stats(df[df['g'] == 'A'], df[df['g'] == 'B'], names['clicks'], names['views'],
+                               var_reduction_covariates=[names['clicks_cov']] if 'var_reduction_method' in config else None,
+                               **config)
+    for e, a in zip(expected, actual):
+        np.testing.assert_allclose(e, a)
+
+
+def test_pipeline_metric_named_weight(value_df):
+    expected = calc_pipeline_mean_and_std(value_df, 'value')
+    assert calc_pipeline_mean_and_std(value_df.rename(columns={'value': 'weight'}), 'weight') == pytest.approx(expected)

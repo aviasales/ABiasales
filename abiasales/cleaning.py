@@ -29,14 +29,12 @@ def remove_outliers(df, metrics, contamination=0.005):
     for which the model prediction equals -1, and are excluded from the returned result.
     """
 
-    df_new = df[metrics].copy()
     clf = IsolationForest(contamination=contamination, random_state=np.random.RandomState(42))
-    clf.fit(df_new)
-    y_pred_train = clf.predict(df_new)
-    df_new['is_outlier'] = y_pred_train
-    df_new = df_new[df_new['is_outlier']==1]
+    clf.fit(df[metrics])
+    y_pred_train = clf.predict(df[metrics])
 
-    return df.loc[df_new.index]
+    # Positional mask: selecting by index labels would duplicate rows if the index is not unique
+    return df[y_pred_train == 1]
 
 
 def cap_above_quantile(df, metrics, q=0.999):

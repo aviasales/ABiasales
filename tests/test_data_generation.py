@@ -59,3 +59,26 @@ def test_value_and_ratio_uplift(source, metric_type):
 def test_invalid_metric_type(source):
     with pytest.raises(ValueError):
         generate_real_exp_data(source, 'value', metric_type='unknown')
+
+
+def test_covariates_do_not_depend_on_uplift():
+    # Regression: covariates were generated from outcomes with uplift,
+    # so CUPED subtracted a part of the treatment effect
+    base = create_test_data(uplift=0.0, n_users=50000)
+    lifted = create_test_data(uplift=0.3, n_users=50000)
+    for col in ['views_cov', 'clicks_cov', 'purchases_cov']:
+        assert lifted[col].mean() / base[col].mean() - 1 == pytest.approx(0, abs=0.03)
+    assert lifted['clicks'].mean() / base['clicks'].mean() - 1 > 0.2
+    assert np.corrcoef(lifted['clicks_cov'], lifted['clicks'])[0, 1] > 0.2
+
+
+def test_cuped_on_test_data_keeps_the_effect():
+    from abiasales.results import calc_exp_stattest
+    df = pd.concat([create_test_data(uplift=0.0, n_users=50000).assign(g='A'),
+                    create_test_data(uplift=0.1, n_users=50000).assign(g='B')]).reset_index(drop=True)
+    ctr = {'num': 'clicks', 'den': 'views', 'weight_method': 'size', 'use_delta_method': True}
+    cuped = {**ctr, 'var_reduction_method': 'cuped', 'var_reduction_covariates': ['views_cov', 'clicks_cov']}
+    plain_uplift = calc_exp_stattest(df, 'g', 'A', 'B', ctr)['uplift'].iloc[0]
+    cuped_uplift = calc_exp_stattest(df, 'g', 'A', 'B', cuped)['uplift'].iloc[0]
+    assert cuped_uplift == pytest.approx(plain_uplift, abs=0.01)
+    assert cuped_uplift == pytest.approx(0.1, abs=0.03)

@@ -25,6 +25,16 @@ def select_columns(df, *cols):
 
     return df[names].copy()
 
+def _free_column_name(df, name):
+    """
+    Returns `name`, prefixed with underscores if needed, so that it is not a column of the dataframe.
+
+    Service columns of the pipeline (weights, linearized metric) must not overwrite user columns.
+    """
+    while name in df.columns:
+        name = '_' + name
+    return name
+
 def calc_mean_and_std(df,
                       metric_num,
                       metric_den=None,
@@ -164,24 +174,25 @@ def calc_pipeline_mean_and_std(df,
     df_out = select_columns(df, metric_num, metric_den, strats_cols, var_reduction_covariates)
 
     if metric_den is None:
-        metric_den = '_den_tmp'
+        metric_den = _free_column_name(df_out, '_den_tmp')
         df_out[metric_den] = 1
 
     # WEIGHTS
-    df_out['weight'] = calc_weights(
+    weight_col = _free_column_name(df_out, 'weight')
+    df_out[weight_col] = calc_weights(
         num=df_out[metric_num],
         den=df_out[metric_den],
         weight_method=weight_method
     )
 
-    metric_num_new = 'linearized_metric' if apply_linearization else metric_num
+    metric_num_new = _free_column_name(df_out, 'linearized_metric') if apply_linearization else metric_num
 
     # LINEARIZATION
     if apply_linearization:
         lin_k = calc_linearization_coef(
             df_out[metric_num],
             df_out[metric_den],
-            df_out['weight']
+            df_out[weight_col]
         )
         df_out[metric_num_new] = df_out[metric_num] - lin_k * df_out[metric_den]
 
@@ -199,7 +210,7 @@ def calc_pipeline_mean_and_std(df,
         df_out,
         metric_num=metric_num_new,
         metric_den=None if apply_linearization else metric_den,
-        metric_weight='weight',
+        metric_weight=weight_col,
         use_delta_method=use_delta_method,
         use_stratification=use_stratification,
         strats_cols=strats_cols
@@ -268,30 +279,30 @@ def calc_groups_stats(df_control,
     df_b = select_columns(df_treatment, metric_num, metric_den, strats_cols, var_reduction_covariates)
 
     if metric_den is None:
-        metric_den = '_den_tmp'
+        metric_den = _free_column_name(df_a, '_den_tmp')
         df_a[metric_den] = 1
         df_b[metric_den] = 1
 
     # WEIGHTS
     rho = calc_intra_corr_coef(df_a[metric_num], df_a[metric_den]) if weight_method == 'intra_corr' else None
-    
-    df_a['weight'] = calc_weights(df_a[metric_num], df_a[metric_den], weight_method, rho)
-    df_b['weight'] = calc_weights(df_b[metric_num], df_b[metric_den], weight_method, rho)
 
+    weight_col = _free_column_name(df_a, 'weight')
+    df_a[weight_col] = calc_weights(df_a[metric_num], df_a[metric_den], weight_method, rho)
+    df_b[weight_col] = calc_weights(df_b[metric_num], df_b[metric_den], weight_method, rho)
+
+    metric_num_new = _free_column_name(df_a, 'linearized_metric') if apply_linearization else metric_num
 
     # LINEARIZATION
     if apply_linearization:
         lin_k = calc_linearization_coef(
             df_a[metric_num],
             df_a[metric_den],
-            df_a['weight']
+            df_a[weight_col]
         )
         # Scale to the ratio units of control: otherwise control mean is 0 and relative uplift is undefined
-        mean_den_a = weighted_mean(df_a[metric_den], df_a['weight'])
-        df_a['linearized_metric'] = (df_a[metric_num] - lin_k * df_a[metric_den]) / mean_den_a + lin_k
-        df_b['linearized_metric'] = (df_b[metric_num] - lin_k * df_b[metric_den]) / mean_den_a + lin_k
-
-    metric_num_new = 'linearized_metric' if apply_linearization else metric_num
+        mean_den_a = weighted_mean(df_a[metric_den], df_a[weight_col])
+        df_a[metric_num_new] = (df_a[metric_num] - lin_k * df_a[metric_den]) / mean_den_a + lin_k
+        df_b[metric_num_new] = (df_b[metric_num] - lin_k * df_b[metric_den]) / mean_den_a + lin_k
 
     # VARIANCE REDUCTION
     if var_reduction_method:
@@ -308,7 +319,7 @@ def calc_groups_stats(df_control,
         df_a,
         metric_num=metric_num_new,
         metric_den=None if apply_linearization else metric_den,
-        metric_weight='weight',
+        metric_weight=weight_col,
         use_delta_method=use_delta_method,
         use_stratification=use_stratification,
         strats_cols=strats_cols,
@@ -319,7 +330,7 @@ def calc_groups_stats(df_control,
         df_b,
         metric_num=metric_num_new,
         metric_den=None if apply_linearization else metric_den,
-        metric_weight='weight',
+        metric_weight=weight_col,
         use_delta_method=use_delta_method,
         use_stratification=use_stratification,
         strats_cols=strats_cols,
@@ -327,10 +338,9 @@ def calc_groups_stats(df_control,
     )
 
     if apply_linearization:
-        df_a['ratio'] = df_a[metric_num_new]
-        df_b['ratio'] = df_b[metric_num_new]
+        ratios_a, ratios_b = df_a[metric_num_new], df_b[metric_num_new]
     else:
-        df_a['ratio'] = df_a[metric_num] / df_a[metric_den]
-        df_b['ratio'] = df_b[metric_num] / df_b[metric_den]
+        ratios_a = df_a[metric_num] / df_a[metric_den]
+        ratios_b = df_b[metric_num] / df_b[metric_den]
 
-    return mean_a, std_a, df_a['weight'], df_a['ratio'], mean_b, std_b, df_b['weight'], df_b['ratio']
+    return mean_a, std_a, df_a[weight_col], ratios_a, mean_b, std_b, df_b[weight_col], ratios_b
