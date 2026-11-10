@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from conftest import make_ratio_df
 from abiasales.metrics import select_columns, calc_mean_and_std, calc_pipeline_mean_and_std, calc_groups_stats
 from abiasales.stats import calc_std, weighted_mean, weighted_mean_std
 from abiasales.stratification import calc_strats_weights
@@ -111,3 +112,53 @@ def test_service_columns_do_not_overwrite_user_columns(ratio_df, renames, config
 def test_pipeline_metric_named_weight(value_df):
     expected = calc_pipeline_mean_and_std(value_df, 'value')
     assert calc_pipeline_mean_and_std(value_df.rename(columns={'value': 'weight'}), 'weight') == pytest.approx(expected)
+
+
+def _with_ratio_covariates(df, rng):
+    # A covariate driven by the denominator and one that predicts the per-unit rate
+    return df.assign(views_cov=df['views'] * rng.lognormal(0, 0.3, len(df)),
+                     ctr_cov=df['clicks'] / df['views'] + rng.normal(0, 0.05, len(df)))
+
+
+@pytest.mark.parametrize('config', [
+    {'weight_method': 'uniform'},
+    {'weight_method': 'sqrt'},
+    {'weight_method': 'size', 'apply_linearization': True},
+    {'weight_method': 'uniform', 'use_stratification': True, 'strats_cols': ['platform']},
+])
+def test_variance_reduction_keeps_control_mean_of_ratio(ratio_df, rng, config):
+    # Regression: CUPED was fitted on the numerator, so the mean of ratios moved (CTR 0.13 -> 0.66)
+    df = _with_ratio_covariates(ratio_df, rng)
+    a, b = df[df['g'] == 'A'], df[df['g'] == 'B']
+    raw = calc_groups_stats(a, b, 'clicks', 'views', **config)
+    cuped = calc_groups_stats(a, b, 'clicks', 'views', var_reduction_method='cuped',
+                              var_reduction_covariates=['views_cov'], **config)
+    assert cuped[0] == pytest.approx(raw[0], rel=1e-9)
+    assert cuped[4] == pytest.approx(raw[4], rel=0.01)
+
+
+def test_variance_reduction_does_not_increase_delta_method_std(rng):
+    # Regression: a covariate related to the denominator increased the Delta Method std 2x.
+    # The sample is large, so that the out-of-sample std of the treatment is not affected by overfitting
+    df = _with_ratio_covariates(make_ratio_df(rng, n=40000), rng)
+    a, b = df[df['g'] == 'A'], df[df['g'] == 'B']
+    config = {'weight_method': 'size', 'use_delta_method': True}
+    raw = calc_groups_stats(a, b, 'clicks', 'views', **config)
+    cuped = calc_groups_stats(a, b, 'clicks', 'views', var_reduction_method='cuped',
+                              var_reduction_covariates=['views_cov'], **config)
+    assert cuped[0] == pytest.approx(raw[0], rel=1e-9)
+    assert cuped[1] <= raw[1] * 1.001 and cuped[5] <= raw[5] * 1.01
+
+
+@pytest.mark.parametrize('config, covariates', [
+    ({'weight_method': 'uniform'}, ['ctr_cov']),
+    ({'weight_method': 'size', 'use_delta_method': True}, ['clicks_cov', 'views_cov']),
+])
+def test_variance_reduction_of_ratio_reduces_std(ratio_df, rng, config, covariates):
+    # The mean of ratios is predicted by the rate, the ratio of sums by clicks and views
+    df = _with_ratio_covariates(ratio_df, rng)
+    a, b = df[df['g'] == 'A'], df[df['g'] == 'B']
+    raw = calc_groups_stats(a, b, 'clicks', 'views', **config)
+    cuped = calc_groups_stats(a, b, 'clicks', 'views', var_reduction_method='cuped',
+                              var_reduction_covariates=covariates, **config)
+    assert cuped[1] < 0.9 * raw[1] and cuped[5] < 0.9 * raw[5]

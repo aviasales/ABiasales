@@ -44,3 +44,14 @@ def test_linearization_and_delta_method_agree(ratio_df):
 def test_invalid_mode(value_df):
     with pytest.raises(ValueError):
         calc_power_table(value_df, 'value', mode='unknown')
+
+
+@pytest.mark.parametrize('weight_method', ['uniform', 'size'])
+def test_variance_reduction_of_ratio_does_not_worsen_mde(ratio_df, weight_method):
+    # Regression: CUPED on the numerator of a ratio doubled the MDE with uniform weights
+    df = ratio_df.assign(views_cov=ratio_df['views'] + np.random.normal(0, 1, len(ratio_df)))
+    kwargs = dict(mode='mde', sample_size=[10000], weight_method=weight_method, return_power_list=True)
+    _, raw = calc_power_table(df, 'clicks', 'views', **kwargs)
+    _, cuped = calc_power_table(df, 'clicks', 'views', var_reduction_method='cuped',
+                                var_reduction_covariates=['views_cov'], **kwargs)
+    assert cuped[0] <= raw[0] * 1.001

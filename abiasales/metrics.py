@@ -45,6 +45,30 @@ def _free_column_name(df, name):
         name = '_' + name
     return name
 
+def _unit_values(df, metric_num, metric_den=None):
+    """
+    Returns per-unit values whose weighted mean is the metric: ratios, or the numerator itself.
+    """
+    return df[metric_num] / df[metric_den] if metric_den else df[metric_num]
+
+def _variance_reduction_target(df, metric_num, metric_den, weight_col, center):
+    """
+    Returns w * (x - center), where x are the per-unit values of the metric and w their weights.
+
+    The variance of the weighted mean of x is the variance of this quantity, so variance
+    reduction models are fitted on it. Fitting them on the numerator of a ratio instead
+    shifts the mean of ratios or increases the Delta Method variance.
+    """
+    return df[weight_col] * (_unit_values(df, metric_num, metric_den) - center)
+
+def _adjust_numerator(df, metric_num, metric_den, weight_col, reduction):
+    """
+    Returns the numerator adjusted so that the per-unit values x move by `reduction` / w,
+    i.e. the variance reduction target w * (x - center) moves by `reduction`.
+    """
+    scale = df[metric_den] / df[weight_col] if metric_den else 1 / df[weight_col]
+    return df[metric_num] - reduction * scale
+
 def calc_mean_and_std(df,
                       metric_num,
                       metric_den=None,
@@ -211,21 +235,28 @@ def calc_pipeline_mean_and_std(df,
         )
         df_out[metric_num_new] = df_out[metric_num] - lin_k * df_out[metric_den]
 
+    den_col = None if apply_linearization else metric_den
+
     # VARIANCE REDUCTION
     if var_reduction_method:
-        df_out[metric_num_new] = apply_variance_reduction(
-            df_out, metric_num_new,
+        center = weighted_mean(_unit_values(df_out, metric_num_new, den_col), df_out[weight_col])
+        target_col = _free_column_name(df_out, 'vr_target')
+        df_out[target_col] = _variance_reduction_target(df_out, metric_num_new, den_col, weight_col, center)
+        reduced = apply_variance_reduction(
+            df_out, target_col,
             var_reduction_covariates,
             var_reduction_method,
             strats_cols if use_stratification else None,
             var_reduction_params
         )
+        df_out[metric_num_new] = _adjust_numerator(df_out, metric_num_new, den_col, weight_col,
+                                                   df_out[target_col] - reduced)
 
     # Compute mean and std
     mean, std = calc_mean_and_std(
         df_out,
         metric_num=metric_num_new,
-        metric_den=None if apply_linearization else metric_den,
+        metric_den=den_col,
         metric_weight=weight_col,
         use_delta_method=use_delta_method,
         use_stratification=use_stratification,
@@ -328,13 +359,20 @@ def calc_groups_stats(df_control,
         df_a[metric_num_new] = (df_a[metric_num] - lin_k * df_a[metric_den]) / mean_den_a + lin_k
         df_b[metric_num_new] = (df_b[metric_num] - lin_k * df_b[metric_den]) / mean_den_a + lin_k
 
+    den_col = None if apply_linearization else metric_den
+
     # VARIANCE REDUCTION
     if var_reduction_method:
-        df_a[metric_num_new], df_b[metric_num_new] = apply_exp_variance_reduction(
-            df_a, df_b, metric_num_new, var_reduction_covariates, var_reduction_method,
+        center = weighted_mean(_unit_values(df_a, metric_num_new, den_col), df_a[weight_col])
+        target_col = _free_column_name(df_a, 'vr_target')
+        df_a[target_col] = _variance_reduction_target(df_a, metric_num_new, den_col, weight_col, center)
+        df_b[target_col] = _variance_reduction_target(df_b, metric_num_new, den_col, weight_col, center)
+        reduced_a, reduced_b = apply_exp_variance_reduction(
+            df_a, df_b, target_col, var_reduction_covariates, var_reduction_method,
             strats_cols if use_stratification else None, var_reduction_params
         )
-
+        df_a[metric_num_new] = _adjust_numerator(df_a, metric_num_new, den_col, weight_col, df_a[target_col] - reduced_a)
+        df_b[metric_num_new] = _adjust_numerator(df_b, metric_num_new, den_col, weight_col, df_b[target_col] - reduced_b)
 
     # SAMPLE STAT
 
@@ -344,7 +382,7 @@ def calc_groups_stats(df_control,
     mean_a, std_a = calc_mean_and_std(
         df_a,
         metric_num=metric_num_new,
-        metric_den=None if apply_linearization else metric_den,
+        metric_den=den_col,
         metric_weight=weight_col,
         use_delta_method=use_delta_method,
         use_stratification=use_stratification,
@@ -355,7 +393,7 @@ def calc_groups_stats(df_control,
     mean_b, std_b = calc_mean_and_std(
         df_b,
         metric_num=metric_num_new,
-        metric_den=None if apply_linearization else metric_den,
+        metric_den=den_col,
         metric_weight=weight_col,
         use_delta_method=use_delta_method,
         use_stratification=use_stratification,
@@ -363,10 +401,7 @@ def calc_groups_stats(df_control,
         strats_weights=strats_weights
     )
 
-    if apply_linearization:
-        ratios_a, ratios_b = df_a[metric_num_new], df_b[metric_num_new]
-    else:
-        ratios_a = df_a[metric_num] / df_a[metric_den]
-        ratios_b = df_b[metric_num] / df_b[metric_den]
+    ratios_a = _unit_values(df_a, metric_num_new, den_col)
+    ratios_b = _unit_values(df_b, metric_num_new, den_col)
 
     return mean_a, std_a, df_a[weight_col], ratios_a, mean_b, std_b, df_b[weight_col], ratios_b

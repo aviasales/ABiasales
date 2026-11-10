@@ -46,6 +46,9 @@ CONFIGS = {
     'ratio size linearization': ({**RATIO, 'weight_method': 'size', 'apply_linearization': True}, False),
     'ratio linearization cuped': ({**RATIO, 'apply_linearization': True, 'var_reduction_method': 'cuped',
                                    'var_reduction_covariates': ['clicks_cov']}, False),
+    'ratio uniform cuped': ({**RATIO, 'var_reduction_method': 'cuped', 'var_reduction_covariates': ['clicks_cov']}, False),
+    'ratio delta stratified cuped': ({**RATIO, 'weight_method': 'size', 'use_delta_method': True,
+                                      'var_reduction_method': 'cuped', 'var_reduction_covariates': ['clicks_cov']}, True),
     'ratio size bootstrap': ({**RATIO, 'weight_method': 'size', 'stat_method': 'bootstrap'}, False),
 }
 
