@@ -36,7 +36,7 @@ class VarianceReducer:
         if self.method == 'cuped':
             return LinearRegression()
         from catboost import CatBoostRegressor
-        return CatBoostRegressor(**self.model_params, logging_level="Silent")
+        return CatBoostRegressor(**self.model_params, logging_level="Silent", allow_writing_files=False)
 
     def fit(self, X, y):
         """
