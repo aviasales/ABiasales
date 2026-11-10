@@ -3,11 +3,10 @@ import pandas as pd
 import scipy.stats
 from tqdm import tqdm
 from statsmodels.stats.multitest import multipletests
-from .cleaning import remove_outliers, cap_above_quantile
 from .metrics import calc_groups_stats
 from .data_generation import generate_real_exp_data
 from .stratification import calc_strats_weights
-from .results import get_exp_params, calc_exp_stattest
+from .results import get_exp_params, calc_exp_stattest, display_table
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -103,19 +102,7 @@ def run_aa_test_simulation(df,
             group['exp_group'] = 'A1'
             group.loc[control_sample_size:, 'exp_group'] = 'A2'
 
-            if config['handle_outliers']=='remove':
-                group = remove_outliers(
-                    group,
-                    config['outliers_cols'],
-                    contamination=config['outliers_contamination']
-                ).reset_index(drop=True)
-            elif config['handle_outliers']=='cap':
-                group[metric_num] = cap_above_quantile(
-                    group,
-                    metrics=[metric_num],
-                    q=1-config['outliers_contamination']
-                )
-
+            # Outliers are handled inside calc_exp_stattest according to config
 
             pvalue = calc_exp_stattest(
                 group, 'exp_group', 'A1', 'A2', config,
@@ -127,7 +114,8 @@ def run_aa_test_simulation(df,
             pvalues.append(pvalue)
 
         pvalues = np.asarray(pvalues)
-        pvalues = pvalues[pvalues > 0]
+        # Drop failed experiments only: p-value = 0 is a valid (most significant) result
+        pvalues = pvalues[~np.isnan(pvalues)]
 
         x = np.linspace(0, 1, len(pvalues))
 
@@ -161,9 +149,9 @@ def run_aa_test_simulation(df,
             })
 
     results = pd.DataFrame(results)
-    display(
-        results.style
-        .applymap(lambda x: 'background-color: red' if x is False else '', subset=['pvalues_aa_uniform'])
+    display_table(
+        results,
+        lambda s: s.map(lambda x: 'background-color: red' if x is False else '', subset=['pvalues_aa_uniform'])
     )
     
     return results
@@ -235,19 +223,7 @@ def run_ab_test_simulation(df,
 
             df_exp = pd.concat([control_group, treatment_group])
 
-            if config['handle_outliers']=='remove':
-                df_exp = remove_outliers(
-                    df_exp,
-                    config['outliers_cols'],
-                    contamination=config['outliers_contamination']
-                ).reset_index(drop=True)
-            elif config['handle_outliers']=='cap':
-                df_exp[metric_num] = cap_above_quantile(
-                    df_exp,
-                    metrics=[metric_num],
-                    q=1-config['outliers_contamination']
-                )
-
+            # Outliers are handled inside calc_exp_stattest according to config
             pvalue = calc_exp_stattest(
                 df_exp, 'exp_group', 'A', 'B', config,
                 use_stratification=config['use_stratification'],
@@ -258,7 +234,8 @@ def run_ab_test_simulation(df,
             pvalues.append(pvalue)
 
         pvalues = np.asarray(pvalues)
-        pvalues = pvalues[pvalues > 0]
+        # Drop failed experiments only: p-value = 0 is a valid (most significant) result
+        pvalues = pvalues[~np.isnan(pvalues)]
         power = np.mean(pvalues < 0.05)
 
         if config['den']:
@@ -284,6 +261,6 @@ def run_ab_test_simulation(df,
             })
 
     results = pd.DataFrame(results)
-    display(results.style.background_gradient(subset=['power'], cmap='Greens'))
+    display_table(results, lambda s: s.background_gradient(subset=['power'], cmap='Greens'))
     
     return results

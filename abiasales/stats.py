@@ -47,6 +47,40 @@ def weighted_std(x, w):
     return np.sqrt(var)
 
 
+def weighted_mean_std(x, w):
+    """
+    Computes the standard deviation of a weighted mean, scaled to a single observation.
+
+    Parameters
+    ----------
+    x : array-like
+        The data values.
+    w : array-like
+        The weights associated with each value in `x`.
+
+    Returns
+    -------
+    float
+        Standard deviation such that `std / sqrt(n)` is the standard error
+        of the weighted mean of `x`.
+
+    Notes
+    -----
+    The weighted mean sum(w * x) / sum(w) is a ratio of sums, so its variance
+    is estimated with the Delta Method:
+
+        Var(weighted mean) ≈ sum(w^2 * (x - mean)^2) / sum(w)^2
+
+    Unlike `weighted_std`, this accounts for the effective sample size
+    reduced by unequal weights. With uniform weights both functions coincide.
+    """
+    x_np = np.asarray(x)
+    w_np = np.asarray(w)
+    mean = weighted_mean(x_np, w_np)
+
+    return np.sqrt(np.mean(w_np ** 2 * (x_np - mean) ** 2)) / np.mean(w_np)
+
+
 def calc_delta_method_std(num, den):
     """
     Computes the standard deviation of a ratio metric using the Delta Method.
@@ -92,20 +126,24 @@ def calc_std(num, den=None, weights=None, use_delta_method=False):
     den : array-like or None, optional
         Denominator values if the metric is a ratio.
         If None, the metric is treated as a value (non-ratio) metric.
+    weights : array-like or None, optional
+        Observation-level weights. If None, all weights are equal to 1.
     use_delta_method : bool, default=False
         Whether to use the Delta Method for computing the standard deviation of a ratio.
 
     Returns
     -------
     std : float
-        Estimated standard deviation of the metric.
+        Estimated standard deviation of the metric, scaled so that
+        `std / sqrt(n)` is the standard error of its (weighted) mean.
 
     Notes
     -----
-    - If `den` is None, returns the sample standard deviation of `num`.
+    - If `den` is None, returns the std of the weighted mean of `num`.
     - If `den` is provided and `use_delta_method` is True, applies analytical
       approximation via the Delta Method.
-    - If `den` is provided and `use_delta_method` is False, computes std of elementwise ratio.
+    - If `den` is provided and `use_delta_method` is False, computes the std
+      of the weighted mean of elementwise ratios.
     """
 
     num_np = np.asarray(num)
@@ -118,7 +156,7 @@ def calc_std(num, den=None, weights=None, use_delta_method=False):
     if den is not None:
         den_np = np.asarray(den)
     else:
-        return weighted_std(num_np, weights_np)
+        return weighted_mean_std(num_np, weights_np)
 
     if use_delta_method:
         return calc_delta_method_std(num_np, den_np)
@@ -126,7 +164,7 @@ def calc_std(num, den=None, weights=None, use_delta_method=False):
         ratios = num_np / den_np
         weights_ = weights_np[~np.isnan(ratios) & ~np.isinf(ratios)]
         ratios = ratios[~np.isnan(ratios) & ~np.isinf(ratios)]
-        return weighted_std(ratios, weights_)
+        return weighted_mean_std(ratios, weights_)
 
 
 def calc_delta_method_ratio_confint(

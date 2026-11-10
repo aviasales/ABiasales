@@ -209,7 +209,8 @@ def calc_groups_stats(df_control,
     weight_method : str
         Method to compute observation weights ('uniform', 'size', 'sqrt', 'intra_corr').
     apply_linearization : bool
-        Whether to apply linearization to ratios.
+        Whether to apply linearization to ratios. The linearized metric is
+        expressed in ratio units of control: (num - k * den) / mean(den_control) + k.
     use_delta_method : bool
         Whether to use Delta Method for std calculation.
     use_stratification : bool
@@ -255,9 +256,11 @@ def calc_groups_stats(df_control,
             df_a[metric_den],
             df_a['weight']
         )
-        df_a['linearized_metric'] = df_a[metric_num] - lin_k * df_a[metric_den]
-        df_b['linearized_metric'] = df_b[metric_num] - lin_k * df_b[metric_den]
-    
+        # Scale to the ratio units of control: otherwise control mean is 0 and relative uplift is undefined
+        mean_den_a = weighted_mean(df_a[metric_den], df_a['weight'])
+        df_a['linearized_metric'] = (df_a[metric_num] - lin_k * df_a[metric_den]) / mean_den_a + lin_k
+        df_b['linearized_metric'] = (df_b[metric_num] - lin_k * df_b[metric_den]) / mean_den_a + lin_k
+
     metric_num_new = 'linearized_metric' if apply_linearization else metric_num
 
     # VARIANCE REDUCTION

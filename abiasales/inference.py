@@ -161,7 +161,7 @@ def calc_stattest_z_test(mean_1, std_1, nobs_1, mean_2, std_2, nobs_2, uplift_ty
     pvalue = 2 * (1 - scipy.stats.norm.cdf(abs(z_stat)))
 
     if uplift_type=='abs':
-        quantile = scipy.stats.norm.ppf(1 - confint_alpha / 2, nobs_1 + nobs_2 - 2)
+        quantile = scipy.stats.norm.ppf(1 - confint_alpha / 2)
         confint = (diff - quantile * se, diff + quantile * se)
     elif uplift_type=='rel':
         confint = calc_delta_method_ratio_confint(

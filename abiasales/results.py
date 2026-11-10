@@ -6,6 +6,32 @@ from .cleaning import remove_outliers, cap_above_quantile
 from .metrics import calc_groups_stats
 from .inference import calc_stattest
 
+def display_table(df, style=None):
+    """
+    Displays a table: styled in IPython/Jupyter, as plain text otherwise.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Table to display.
+    style : callable, optional
+        Function that takes `df.style` and returns a styled `Styler`.
+
+    Notes
+    -----
+    Falls back to plain text if IPython is not running or styling is unavailable
+    (no jinja2/matplotlib, old pandas without `Styler.map`), so that a long
+    computation never fails at the display step.
+    """
+    try:
+        from IPython import get_ipython
+        from IPython.display import display
+        if get_ipython() is None:
+            raise ImportError("IPython is not running")
+        display(style(df.style) if style else df)
+    except (ImportError, AttributeError):
+        print(df.to_string())
+
 def get_exp_params(metric_dict):
     
     params = dict()
@@ -202,11 +228,9 @@ def calc_exp_results(df, exp_group_col, metrics,
         results['pvalue'] = multipletests(results['pvalue_init'], method=multitest_correction_method)[1]
 
     if display_colored_results:
-        colored_results = (
-            results
-            .style
-            .applymap(lambda x: 'background-color: #90ee90' if x<=pvalue_threshold else '', subset=['pvalue'])
+        display_table(
+            results,
+            lambda s: s.map(lambda x: 'background-color: #90ee90' if x<=pvalue_threshold else '', subset=['pvalue'])
         )
-        display(colored_results)
 
     return results
