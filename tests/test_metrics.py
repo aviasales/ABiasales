@@ -1,0 +1,211 @@
+import numpy as np
+import pandas as pd
+import pytest
+
+from conftest import make_ratio_df
+from abiasales.metrics import select_columns, calc_mean_and_std, calc_pipeline_mean_and_std, calc_groups_stats
+from abiasales.stats import calc_std, weighted_mean, weighted_mean_std
+from abiasales.stratification import calc_strats_weights
+
+
+def test_select_columns_flattens_and_deduplicates(ratio_df):
+    out = select_columns(ratio_df, 'g', None, ['views', 'g'], ('clicks',))
+    assert list(out.columns) == ['g', 'views', 'clicks']
+    with pytest.raises(KeyError, match='missing'):
+        select_columns(ratio_df, 'missing')
+
+
+def test_select_columns_with_rows(ratio_df):
+    rows = ratio_df['g'] == 'A'
+    out = select_columns(ratio_df, 'g', 'clicks', rows=rows)
+    assert out.equals(ratio_df.loc[rows, ['g', 'clicks']])
+    out['clicks'] = -1
+    assert (ratio_df['clicks'] >= 0).all()
+
+
+def test_mean_and_std_without_stratification(ratio_df):
+    ratio_df['w'] = ratio_df['views']
+    mean, std = calc_mean_and_std(ratio_df, 'clicks', 'views', 'w')
+    assert mean == pytest.approx(ratio_df['clicks'].sum() / ratio_df['views'].sum())
+    assert std == pytest.approx(calc_std(ratio_df['clicks'], ratio_df['views'], ratio_df['w']))
+
+
+def test_stratified_mean_and_std_match_manual(value_df):
+    df = value_df.set_index(np.arange(len(value_df))[::-1])  # labels differ from positions
+    mean, std = calc_mean_and_std(df, 'value', use_stratification=True, strats_cols=['platform', 'country'])
+    weights = calc_strats_weights(df, ['platform', 'country'])
+    groups = df.groupby(['platform', 'country'])['value']
+    exp_mean = sum(weights[s] * g.mean() for s, g in groups)
+    exp_var = sum(weights[s] * g.std(ddof=1) ** 2 for s, g in groups)
+    assert mean == pytest.approx(exp_mean)
+    assert std == pytest.approx(np.sqrt(exp_var))
+
+
+def test_stratified_mean_renormalizes_missing_strata(rng):
+    # Regression: a stratum missing in the group biased the mean towards zero
+    df = pd.DataFrame({'m': rng.normal(10, 1, 500), 's': 'x'})
+    weights = {('x',): 0.8, ('y',): 0.2}
+    with pytest.warns(UserWarning, match='renormalized'):
+        mean, _ = calc_mean_and_std(df, 'm', use_stratification=True, strats_cols=['s'], strats_weights=weights)
+    assert mean == pytest.approx(df['m'].mean())
+
+
+def test_groups_stats_linearization_is_in_ratio_units(ratio_df):
+    # Regression: control mean of linearized metric was 0, so relative uplift was infinite
+    df_a, df_b = ratio_df[ratio_df['g'] == 'A'], ratio_df[ratio_df['g'] == 'B']
+    mean_a, std_a, _, ratios_a, mean_b, *_ = calc_groups_stats(df_a, df_b, 'clicks', 'views', apply_linearization=True)
+    ratio_a = df_a['clicks'].sum() / df_a['views'].sum()
+    ratio_b = df_b['clicks'].sum() / df_b['views'].sum()
+    assert mean_a == pytest.approx(ratio_a)
+    assert mean_b / mean_a - 1 == pytest.approx(ratio_b / ratio_a - 1, abs=0.01)
+    assert ratios_a.mean() == pytest.approx(ratio_a)
+
+
+def test_groups_stats_linearization_and_delta_have_same_se(ratio_df):
+    df_a, df_b = ratio_df[ratio_df['g'] == 'A'], ratio_df[ratio_df['g'] == 'B']
+    lin = calc_groups_stats(df_a, df_b, 'clicks', 'views', apply_linearization=True)
+    delta = calc_groups_stats(df_a, df_b, 'clicks', 'views', weight_method='size', use_delta_method=True)
+    assert lin[1] == pytest.approx(delta[1], rel=0.01)
+
+
+def test_groups_stats_value_metric(value_df):
+    df_a, df_b = value_df[value_df['g'] == 'A'], value_df[value_df['g'] == 'B']
+    mean_a, std_a, weights_a, ratios_a, mean_b, std_b, *_ = calc_groups_stats(df_a, df_b, 'value')
+    assert mean_a == pytest.approx(df_a['value'].mean())
+    assert std_a == pytest.approx(df_a['value'].std(ddof=1))
+    assert np.all(weights_a == 1)
+
+
+def test_groups_stats_does_not_modify_input(value_df):
+    before = value_df.copy()
+    df_a, df_b = value_df[value_df['g'] == 'A'], value_df[value_df['g'] == 'B']
+    calc_groups_stats(df_a, df_b, 'value', use_stratification=True, strats_cols=['platform'],
+                      var_reduction_method='cuped', var_reduction_covariates=['cov'])
+    pd.testing.assert_frame_equal(value_df, before)
+
+
+def test_groups_stats_cuped_reduces_std(value_df):
+    df_a, df_b = value_df[value_df['g'] == 'A'], value_df[value_df['g'] == 'B']
+    raw = calc_groups_stats(df_a, df_b, 'value')
+    cuped = calc_groups_stats(df_a, df_b, 'value', var_reduction_method='cuped', var_reduction_covariates=['cov'])
+    assert cuped[1] < 0.7 * raw[1]
+    assert cuped[0] == pytest.approx(raw[0])
+
+
+def test_pipeline_mean_and_std_matches_mean_and_std(ratio_df):
+    mean, std = calc_pipeline_mean_and_std(ratio_df, 'clicks', 'views', weight_method='size')
+    exp_mean, exp_std = calc_mean_and_std(ratio_df.assign(w=ratio_df['views']), 'clicks', 'views', 'w')
+    assert (mean, std) == pytest.approx((exp_mean, exp_std))
+
+
+@pytest.mark.parametrize('renames, config', [
+    ({'clicks': 'weight', 'views': 'linearized_metric'}, {'weight_method': 'sqrt', 'apply_linearization': True}),
+    ({'clicks': 'linearized_metric', 'views': 'weight'}, {'weight_method': 'intra_corr'}),
+    ({'clicks_cov': 'weight'}, {'apply_linearization': True, 'var_reduction_method': 'cuped'}),
+])
+def test_service_columns_do_not_overwrite_user_columns(ratio_df, renames, config):
+    # Regression: weights were stored in a column named 'weight' and overwrote a metric with this name
+    names = {c: renames.get(c, c) for c in ['clicks', 'views', 'clicks_cov']}
+    expected = calc_groups_stats(ratio_df[ratio_df['g'] == 'A'], ratio_df[ratio_df['g'] == 'B'], 'clicks', 'views',
+                                 var_reduction_covariates=['clicks_cov'] if 'var_reduction_method' in config else None,
+                                 **config)
+    df = ratio_df.rename(columns=renames)
+    actual = calc_groups_stats(df[df['g'] == 'A'], df[df['g'] == 'B'], names['clicks'], names['views'],
+                               var_reduction_covariates=[names['clicks_cov']] if 'var_reduction_method' in config else None,
+                               **config)
+    for e, a in zip(expected, actual):
+        np.testing.assert_allclose(e, a)
+
+
+def test_pipeline_metric_named_weight(value_df):
+    expected = calc_pipeline_mean_and_std(value_df, 'value')
+    assert calc_pipeline_mean_and_std(value_df.rename(columns={'value': 'weight'}), 'weight') == pytest.approx(expected)
+
+
+def _with_ratio_covariates(df, rng):
+    # A covariate driven by the denominator and one that predicts the per-unit rate
+    return df.assign(views_cov=df['views'] * rng.lognormal(0, 0.3, len(df)),
+                     ctr_cov=df['clicks'] / df['views'] + rng.normal(0, 0.05, len(df)))
+
+
+@pytest.mark.parametrize('config', [
+    {'weight_method': 'uniform'},
+    {'weight_method': 'sqrt'},
+    {'weight_method': 'size', 'apply_linearization': True},
+    {'weight_method': 'uniform', 'use_stratification': True, 'strats_cols': ['platform']},
+])
+def test_variance_reduction_keeps_control_mean_of_ratio(ratio_df, rng, config):
+    # Regression: CUPED was fitted on the numerator, so the mean of ratios moved (CTR 0.13 -> 0.66)
+    df = _with_ratio_covariates(ratio_df, rng)
+    a, b = df[df['g'] == 'A'], df[df['g'] == 'B']
+    raw = calc_groups_stats(a, b, 'clicks', 'views', **config)
+    cuped = calc_groups_stats(a, b, 'clicks', 'views', var_reduction_method='cuped',
+                              var_reduction_covariates=['views_cov'], **config)
+    assert cuped[0] == pytest.approx(raw[0], rel=1e-9)
+    assert cuped[4] == pytest.approx(raw[4], rel=0.01)
+
+
+def test_variance_reduction_does_not_increase_delta_method_std(rng):
+    # Regression: a covariate related to the denominator increased the Delta Method std 2x.
+    # The sample is large, so that the out-of-sample std of the treatment is not affected by overfitting
+    df = _with_ratio_covariates(make_ratio_df(rng, n=40000), rng)
+    a, b = df[df['g'] == 'A'], df[df['g'] == 'B']
+    config = {'weight_method': 'size', 'use_delta_method': True}
+    raw = calc_groups_stats(a, b, 'clicks', 'views', **config)
+    cuped = calc_groups_stats(a, b, 'clicks', 'views', var_reduction_method='cuped',
+                              var_reduction_covariates=['views_cov'], **config)
+    assert cuped[0] == pytest.approx(raw[0], rel=1e-9)
+    assert cuped[1] <= raw[1] * 1.001 and cuped[5] <= raw[5] * 1.01
+
+
+@pytest.mark.parametrize('config, covariates', [
+    ({'weight_method': 'uniform'}, ['ctr_cov']),
+    ({'weight_method': 'size', 'use_delta_method': True}, ['clicks_cov', 'views_cov']),
+])
+def test_variance_reduction_of_ratio_reduces_std(ratio_df, rng, config, covariates):
+    # The mean of ratios is predicted by the rate, the ratio of sums by clicks and views
+    df = _with_ratio_covariates(ratio_df, rng)
+    a, b = df[df['g'] == 'A'], df[df['g'] == 'B']
+    raw = calc_groups_stats(a, b, 'clicks', 'views', **config)
+    cuped = calc_groups_stats(a, b, 'clicks', 'views', var_reduction_method='cuped',
+                              var_reduction_covariates=covariates, **config)
+    assert cuped[1] < 0.9 * raw[1] and cuped[5] < 0.9 * raw[5]
+
+
+def test_stratified_mean_with_size_weights_is_ratio_of_sums(ratio_df):
+    # Regression: strata were weighted by user shares, so the stratified CTR changed the estimand
+    ratio_df['w'] = ratio_df['views']
+    mean, _ = calc_mean_and_std(ratio_df, 'clicks', 'views', 'w', use_stratification=True, strats_cols=['platform'])
+    assert mean == pytest.approx(ratio_df['clicks'].sum() / ratio_df['views'].sum())
+
+
+def test_stratified_std_uses_shares_of_strata_in_the_group(rng):
+    # Regression: sum(w_s * std_s^2) assumes that strata shares in the group equal their weights,
+    # which underestimated the variance for different splits by strata
+    df = pd.DataFrame({'m': rng.normal(size=1000), 's': np.where(np.arange(1000) < 700, 'x', 'y')})
+    df.loc[df['s'] == 'y', 'm'] *= 3
+    weights = {('x',): 0.3, ('y',): 0.7}
+    _, std = calc_mean_and_std(df, 'm', use_stratification=True, strats_cols=['s'], strats_weights=weights)
+    groups = df.groupby('s')['m']
+    se2 = sum(weights[(s,)] ** 2 * g.var(ddof=1) / len(g) for s, g in groups)
+    assert std / np.sqrt(len(df)) == pytest.approx(np.sqrt(se2))
+
+
+def test_groups_stats_linearization_equals_delta_for_different_denominators(ratio_df):
+    # Regression: both groups were scaled by the control mean denominator, so more views in the
+    # treatment group (+20%) shifted the uplift of the linearized metric from 5.5% to 6.5%
+    df_a, df_b = ratio_df[ratio_df['g'] == 'A'], ratio_df[ratio_df['g'] == 'B'].copy()
+    df_b['views'] = (df_b['views'] * 1.2).round().astype(int)
+    lin = calc_groups_stats(df_a, df_b, 'clicks', 'views', apply_linearization=True)
+    delta = calc_groups_stats(df_a, df_b, 'clicks', 'views', weight_method='size', use_delta_method=True)
+    assert lin[0] == pytest.approx(delta[0]) and lin[4] == pytest.approx(delta[4])
+
+
+def test_small_strata_are_merged_in_group_stats_and_pipeline(rng):
+    df = make_ratio_df(rng, n=2000)
+    df['s'] = rng.integers(0, 300, len(df))
+    df_a, df_b = df[df['g'] == 'A'], df[df['g'] == 'B']
+    with pytest.warns(UserWarning, match='merged'):
+        calc_groups_stats(df_a, df_b, 'clicks', 'views', use_stratification=True, strats_cols=['s'])
+    with pytest.warns(UserWarning, match='merged'):
+        calc_pipeline_mean_and_std(df, 'clicks', 'views', use_stratification=True, strats_cols=['s'])

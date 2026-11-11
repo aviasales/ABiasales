@@ -1,3 +1,4 @@
+import warnings
 import numpy as np
 
 def calc_intra_corr_coef(num, den):
@@ -26,10 +27,18 @@ def calc_intra_corr_coef(num, den):
     where:
         - s3 : within-cluster variance
         - s2 : between-cluster variance
+
+    The formula assumes binary events within a cluster (0 <= num <= den),
+    e.g. clicks out of views. For non-binary numerators (revenue, etc.)
+    the coefficient is not meaningful, so a warning is raised.
     """
 
     num_np = np.asarray(num)
     den_np = np.asarray(den)
+    outside = np.mean((num_np < 0) | (num_np > den_np))
+    if outside > 0:
+        warnings.warn(f"{outside:.2%} of units have a numerator outside [0, denominator]: the intra-cluster "
+                      "correlation assumes binary events, e.g. clicks out of views")
 
     ri = num_np / den_np
     s3 = num_np * (1 - ri) ** 2 + (den_np - num_np) * ri ** 2
@@ -73,7 +82,7 @@ def calc_weights_intra_corr(num, den, intra_corr_coef=None):
     if (den==np.ones(den.size)).all():
         return np.ones(den.size)
 
-    if intra_corr_coef:
+    if intra_corr_coef is not None:
         rho = intra_corr_coef
     else:
         rho = calc_intra_corr_coef(num, den)

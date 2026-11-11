@@ -1,23 +1,73 @@
+import warnings
 import numpy as np
 import pandas as pd
 import scipy.stats
 from tqdm import tqdm
-from statsmodels.stats.multitest import multipletests
-from .cleaning import remove_outliers, cap_above_quantile
-from .metrics import calc_groups_stats
 from .data_generation import generate_real_exp_data
-from .stratification import calc_strats_weights
-from .results import get_exp_params, calc_exp_stattest
+from .metrics import select_columns
+from .results import get_exp_params, check_exp_params, calc_exp_stattest, display_table
 
-import warnings
-warnings.filterwarnings("ignore")
+def _valid_pvalues(pvalues, config):
+    # Drop failed experiments only: p-value = 0 is a valid (most significant) result
+    pvalues = np.asarray(pvalues, dtype=float)
+    failed = int(np.isnan(pvalues).sum())
+    if failed:
+        warnings.warn(f"{failed} of {len(pvalues)} experiments have no p-value and are skipped "
+                      f"for config {_config_description(config)}")
+    return pvalues[~np.isnan(pvalues)]
+
+
+def _is_useful_config(config):
+    # Ratio options do not change a metric without denominator, such configs would be duplicates
+    if not config['den'] and (config['apply_linearization'] or config['use_delta_method']
+                              or config['weight_method'] != 'uniform'):
+        return False
+    try:
+        check_exp_params(get_exp_params(config))
+    except ValueError:
+        return False
+    return True
 
 def construct_exp_configs(metric_num, metric_den=None,
-                          weight_methods=['uniform'], apply_linearization=[False], use_delta_method=[False],
-                          stat_methods=['t_test'],
-                          use_stratification=[False], strats_cols=[],
-                          var_reduction_methods=[None], var_reduction_covariates=[],
-                          handle_outliers=[None], outliers_contamination=[0.001], outliers_cols=[]):
+                          weight_methods=('uniform',), apply_linearization=(False,), use_delta_method=(False,),
+                          stat_methods=('t_test',),
+                          use_stratification=(False,), strats_cols=None,
+                          var_reduction_methods=(None,), var_reduction_covariates=None, var_reduction_params=None,
+                          handle_outliers=(None,), outliers_contamination=(0.001,), outliers_cols=None):
+    """
+    Builds metric configurations for all valid combinations of the given methods.
+
+    Each argument except `metric_num`, `metric_den`, `strats_cols`,
+    `var_reduction_covariates`, `var_reduction_params` and `outliers_cols` is a list of options.
+    Incompatible combinations (see `results.check_exp_params`, e.g., Delta Method
+    without 'size' weights, proportion test with variance reduction) are skipped,
+    as well as ratio options for a metric without denominator.
+
+    Parameters
+    ----------
+    metric_num : str
+        Name of numerator column.
+    metric_den : str or None
+        Name of denominator column.
+    weight_methods, apply_linearization, use_delta_method, stat_methods,
+    use_stratification, var_reduction_methods, handle_outliers, outliers_contamination : list
+        Options to combine, see `calc_exp_results` for possible values.
+        `outliers_contamination` is combined only with outliers handling.
+    strats_cols, var_reduction_covariates, outliers_cols : list of str
+        Columns shared by all configurations.
+    var_reduction_params : dict, optional
+        CatBoost parameters for CUPAC shared by all configurations.
+
+    Returns
+    -------
+    list of dict
+        Metric configurations for `run_aa_test_simulation` / `run_ab_test_simulation`.
+
+    Raises
+    ------
+    ValueError
+        If no valid combination is left.
+    """
 
     configs = [
         {
@@ -25,6 +75,7 @@ def construct_exp_configs(metric_num, metric_den=None,
             'apply_linearization': apl, 'use_delta_method': udm,
             'stat_method': sm, 'use_stratification': us, 'strats_cols': strats_cols,
             'var_reduction_method': vm, 'var_reduction_covariates': var_reduction_covariates,
+            'var_reduction_params': var_reduction_params,
             'handle_outliers': ho, 'outliers_contamination': oc if ho else None, 'outliers_cols': outliers_cols
         }
         for wm in weight_methods
@@ -34,28 +85,49 @@ def construct_exp_configs(metric_num, metric_den=None,
         for us in use_stratification
         for vm in var_reduction_methods
         for ho in handle_outliers
-        for oc in outliers_contamination
-        if (not (udm==True and sm != 't_test'))
-           and (not (udm==True and apl==True))
-           and (not (udm==True and wm!='size'))
-           and (not (sm=='bootstrap' and apl))
-           and (not (us and sm not in ('t_test', 'proportion')))
-           and (not (sm=='proportion' and apl==True))
-           and (not (sm=='proportion' and udm==True))
-           and (not (sm=='proportion' and vm is not None))
-           and (not (not metric_den and (apl==True or udm==True or wm!='uniform')))
+        for oc in (outliers_contamination if ho else outliers_contamination[:1])
     ]
+    configs = [c for c in configs if _is_useful_config(c)]
 
     if not configs:
         raise ValueError("Only invalid combinations of methods can be returned. Check methods arrays.")
     return configs
+
+def _config_columns(df, config):
+    # Resampling only the columns used by the config is much cheaper for a wide dataframe
+    return select_columns(df, config['num'], config['den'], config['strats_cols'],
+                          config['var_reduction_covariates'], config['outliers_cols'])
+
+def _bootstrap_seed(config):
+    # Bootstrap is seeded from the global RNG, so simulations are reproducible with np.random.seed.
+    # Other methods do not draw a seed and keep the global RNG sequence unchanged
+    return np.random.randint(2**31) if config['stat_method'] == 'bootstrap' else None
+
+def _config_description(config):
+    # Ratio options are shown only for ratio metrics
+    description = {}
+    if config['den']:
+        description.update({
+            'weight': config['weight_method'],
+            'apply_lin': str(config['apply_linearization']),
+            'use_delta_method': str(config['use_delta_method']),
+        })
+    description.update({
+        'stat': config['stat_method'],
+        'use_strat': str(config['use_stratification']),
+        'var_reduction': config['var_reduction_method'],
+        'handle_outliers': config['handle_outliers'],
+        'outliers_contamination': config['outliers_contamination'],
+    })
+    return description
 
 def run_aa_test_simulation(df,
                            configs,
                            control_sample_size=5000,
                            control_perc=0.5,
                            n_exp=1000,
-                           n_bootstrap=1000):
+                           n_bootstrap=1000,
+                           alpha=0.05):
     """
     Simulates A/A tests to evaluate false positive rate and p-value uniformity
     across different experiment configurations.
@@ -79,11 +151,19 @@ def run_aa_test_simulation(df,
         Number of simulated experiments.
     n_bootstrap : int
         Number of bootstrap samples if bootstrap is used.
+    alpha : float, default=0.05
+        Significance level at which the false positive rate is checked.
 
     Returns
     -------
     pd.DataFrame
-        Summary of false positive rate metrics for each configuration.
+        Summary for each configuration:
+        - fpr: share of A/A tests with p-value below `alpha`;
+        - fpr_valid: False if `fpr` is significantly above `alpha`
+          (one-sided binomial test at the 1% level). With 1000 experiments it flags
+          an observed FPR from 6.8% at alpha = 0.05 and detects a true FPR of 7.5% in 82% of runs;
+        - fpr-pvalue_auc: area between the empirical distribution of p-values and the uniform one
+          plus 0.5, so 0.5 means uniform p-values and larger values mean too small p-values.
     """
     treatment_sample_size = int(control_sample_size * (1 - control_perc) / control_perc)
     results = []
@@ -93,77 +173,56 @@ def run_aa_test_simulation(df,
         print(f'Running A/A for config: {config}...')
         metric_num = config['num']
         metric_den = config['den']
+        df_config = _config_columns(df, config)
 
         pvalues = []
-        for i in tqdm(range(n_exp)):
-            group = generate_real_exp_data(
-                df, metric_num, metric_den,
-                sample_size=control_sample_size + treatment_sample_size
-            )
-            group['exp_group'] = 'A1'
-            group.loc[control_sample_size:, 'exp_group'] = 'A2'
-
-            if config['handle_outliers']=='remove':
-                group = remove_outliers(
-                    group,
-                    config['outliers_cols'],
-                    contamination=config['outliers_contamination']
-                ).reset_index(drop=True)
-            elif config['handle_outliers']=='cap':
-                group[metric_num] = cap_above_quantile(
-                    group,
-                    metrics=[metric_num],
-                    q=1-config['outliers_contamination']
+        # Repeated runs would flood the output with the same warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            for i in tqdm(range(n_exp)):
+                group = generate_real_exp_data(
+                    df_config, metric_num, metric_den,
+                    sample_size=control_sample_size + treatment_sample_size
                 )
+                group['exp_group'] = 'A1'
+                group.loc[control_sample_size:, 'exp_group'] = 'A2'
 
+                # Outliers are handled inside calc_exp_stattest according to config
 
-            pvalue = calc_exp_stattest(
-                group, 'exp_group', 'A1', 'A2', config,
-                use_stratification=config['use_stratification'],
-                strats_cols=config['strats_cols'],
-                n_bootstrap=n_bootstrap
-            )['pvalue'].values[0]
+                pvalue = calc_exp_stattest(
+                    group, 'exp_group', 'A1', 'A2', config,
+                    use_stratification=config['use_stratification'],
+                    strats_cols=config['strats_cols'],
+                    n_bootstrap=n_bootstrap,
+                    random_state=_bootstrap_seed(config)
+                )['pvalue'].values[0]
 
-            pvalues.append(pvalue)
+                pvalues.append(pvalue)
 
-        pvalues = np.asarray(pvalues)
-        pvalues = pvalues[pvalues > 0]
+        pvalues = _valid_pvalues(pvalues, config)
+        if not len(pvalues):
+            results.append({**_config_description(config), 'fpr': np.nan, 'fpr_valid': False, 'fpr-pvalue_auc': np.nan})
+            continue
 
         x = np.linspace(0, 1, len(pvalues))
 
-        try:
-            fpr_auc = np.trapz(y=x - np.sort(pvalues), x=x) + 0.5
-        except:
-            fpr_auc = np.trapezoid(y=x - np.sort(pvalues), x=x) + 0.5
+        trapezoid = getattr(np, 'trapezoid', None) or np.trapz  # np.trapz is removed in numpy 2
+        fpr_auc = trapezoid(y=x - np.sort(pvalues), x=x) + 0.5
 
-        if config['den']:
-            results.append({
-                'weight': config['weight_method'],
-                'apply_lin': str(config['apply_linearization']),
-                'use_delta_method': str(config['use_delta_method']),
-                'stat': config['stat_method'],
-                'use_strat': str(config['use_stratification']),
-                'var_reduction': config['var_reduction_method'],
-                'handle_outliers': config['handle_outliers'],
-                'outliers_contamination': config['outliers_contamination'],
-                'fpr-pvalue_auc': fpr_auc,
-                'pvalues_aa_uniform': scipy.stats.kstest(pvalues, scipy.stats.uniform(0, 1).cdf).pvalue > 0.001
-            })
-        else:
-            results.append({
-                'stat': config['stat_method'],
-                'use_strat': str(config['use_stratification']),
-                'var_reduction': config['var_reduction_method'],
-                'handle_outliers': config['handle_outliers'],
-                'outliers_contamination': config['outliers_contamination'],
-                'fpr-pvalue_auc': fpr_auc,
-                'pvalues_aa_uniform': scipy.stats.kstest(pvalues, scipy.stats.uniform(0, 1).cdf).pvalue > 0.001
-            })
+        # A test of uniformity of all p-values is too weak: with 1000 experiments
+        # the KS test accepted a true FPR of 7.5% in 62% of runs
+        n_positive = int(np.sum(pvalues < alpha))
+        results.append({
+            **_config_description(config),
+            'fpr': n_positive / len(pvalues),
+            'fpr_valid': bool(scipy.stats.binomtest(n_positive, len(pvalues), alpha, alternative='greater').pvalue >= 0.01),
+            'fpr-pvalue_auc': fpr_auc,
+        })
 
     results = pd.DataFrame(results)
-    display(
-        results.style
-        .applymap(lambda x: 'background-color: red' if x is False else '', subset=['pvalues_aa_uniform'])
+    display_table(
+        results,
+        lambda s: s.map(lambda x: 'background-color: red' if x is False else '', subset=['fpr_valid'])
     )
     
     return results
@@ -175,7 +234,8 @@ def run_ab_test_simulation(df,
                            n_exp=1000,
                            metric_type='value',
                            uplift=0.1,
-                           n_bootstrap=1000):
+                           n_bootstrap=1000,
+                           alpha=0.05):
     """
     Simulates A/B tests to evaluate statistical power across configurations.
 
@@ -183,7 +243,7 @@ def run_ab_test_simulation(df,
     - Generates control and treatment groups from real data.
     - Injects uplift into treatment group.
     - Applies the full analysis pipeline (weighting, linearization, stratification, variance reduction, handling outliers).
-    - Measures power as the proportion of p-values < 0.05.
+    - Measures power as the proportion of p-values below `alpha`.
 
     Parameters
     ----------
@@ -203,6 +263,8 @@ def run_ab_test_simulation(df,
         Relative uplift to inject into treatment group.
     n_bootstrap : int
         Number of bootstrap iterations.
+    alpha : float, default=0.05
+        Significance level.
 
     Returns
     -------
@@ -217,73 +279,44 @@ def run_ab_test_simulation(df,
         print(f'Running A/B for config: {config}...')
         metric_num = config['num']
         metric_den = config['den']
+        df_config = _config_columns(df, config)
 
         pvalues = []
-        for i in tqdm(range(n_exp)):
-            control_group = generate_real_exp_data(
-                df, metric_num, metric_den, metric_type,
-                sample_size=control_sample_size
-            )
-            control_group['exp_group'] = 'A'
-
-            treatment_group = generate_real_exp_data(
-                df, metric_num, metric_den, metric_type,
-                sample_size=treatment_sample_size,
-                uplift=uplift
-            )
-            treatment_group['exp_group'] = 'B'
-
-            df_exp = pd.concat([control_group, treatment_group])
-
-            if config['handle_outliers']=='remove':
-                df_exp = remove_outliers(
-                    df_exp,
-                    config['outliers_cols'],
-                    contamination=config['outliers_contamination']
-                ).reset_index(drop=True)
-            elif config['handle_outliers']=='cap':
-                df_exp[metric_num] = cap_above_quantile(
-                    df_exp,
-                    metrics=[metric_num],
-                    q=1-config['outliers_contamination']
+        # Repeated runs would flood the output with the same warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            for i in tqdm(range(n_exp)):
+                control_group = generate_real_exp_data(
+                    df_config, metric_num, metric_den, metric_type,
+                    sample_size=control_sample_size
                 )
+                control_group['exp_group'] = 'A'
 
-            pvalue = calc_exp_stattest(
-                df_exp, 'exp_group', 'A', 'B', config,
-                use_stratification=config['use_stratification'],
-                strats_cols=config['strats_cols'],
-                n_bootstrap=n_bootstrap
-            )['pvalue'].values[0]
+                treatment_group = generate_real_exp_data(
+                    df_config, metric_num, metric_den, metric_type,
+                    sample_size=treatment_sample_size,
+                    uplift=uplift
+                )
+                treatment_group['exp_group'] = 'B'
 
-            pvalues.append(pvalue)
+                df_exp = pd.concat([control_group, treatment_group])
 
-        pvalues = np.asarray(pvalues)
-        pvalues = pvalues[pvalues > 0]
-        power = np.mean(pvalues < 0.05)
+                # Outliers are handled inside calc_exp_stattest according to config
+                pvalue = calc_exp_stattest(
+                    df_exp, 'exp_group', 'A', 'B', config,
+                    use_stratification=config['use_stratification'],
+                    strats_cols=config['strats_cols'],
+                    n_bootstrap=n_bootstrap,
+                    random_state=_bootstrap_seed(config)
+                )['pvalue'].values[0]
 
-        if config['den']:
-            results.append({
-                'weight': config['weight_method'],
-                'apply_lin': str(config['apply_linearization']),
-                'use_delta_method': str(config['use_delta_method']),
-                'stat': config['stat_method'],
-                'use_strat': str(config['use_stratification']),
-                'var_reduction': config['var_reduction_method'],
-                'handle_outliers': config['handle_outliers'],
-                'outliers_contamination': config['outliers_contamination'],
-                'power': power
-            })
-        else:
-            results.append({
-                'stat': config['stat_method'],
-                'use_strat': str(config['use_stratification']),
-                'var_reduction': config['var_reduction_method'],
-                'handle_outliers': config['handle_outliers'],
-                'outliers_contamination': config['outliers_contamination'],
-                'power': power
-            })
+                pvalues.append(pvalue)
+
+        pvalues = _valid_pvalues(pvalues, config)
+        power = np.mean(pvalues < alpha) if len(pvalues) else np.nan
+        results.append({**_config_description(config), 'power': power})
 
     results = pd.DataFrame(results)
-    display(results.style.background_gradient(subset=['power'], cmap='Greens'))
+    display_table(results, lambda s: s.background_gradient(subset=['power'], cmap='Greens'))
     
     return results

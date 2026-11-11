@@ -12,6 +12,11 @@ It includes:
 pip install git+https://github.com/aviasales/ABiasales.git
 ```
 
+Optional dependencies: `display` for styled result tables in Jupyter, `cupac` for CUPAC (CatBoost):
+```bash
+pip install "abiasales[display,cupac] @ git+https://github.com/aviasales/ABiasales.git"
+```
+
 ## Quick start
 ```python
 from abiasales.results import calc_exp_results
@@ -37,9 +42,31 @@ results = calc_exp_results(
 )
 ```
 
+`results` is numeric: relative uplift and its confidence interval are fractions (`0.05` means +5%).
+For every test the confidence interval excludes 0 exactly when the p-value is significant:
+z- and t-tests use Fieller's interval for the relative uplift, the proportion test inverts the score test,
+bootstrap inverts its symmetric test of the difference.
+In Jupyter the function also displays a formatted table, outside Jupyter it prints it as text.
+`format_results(results)` returns the same human-readable table.
+
+Incompatible method combinations raise `ValueError`, e.g. Delta Method requires `weight_method='size'`,
+linearization requires `weight_method='uniform'`, proportion test and bootstrap ignore stratification,
+a binary metric cannot be capped.
+
+Notes on the methods:
+- Outliers are found on all compared groups together, so the same threshold applies to every group.
+- Stratum weights are shares of the unit weight (views for `weight_method='size'`), so the stratified
+  estimate keeps the ratio of sums. Strata with fewer than 10 expected units in the smallest group are merged
+  into one stratum with a warning.
+- CUPED corrects the variance of the control group for the in-sample fit of its covariates.
+- `power.py` assumes by default that the treatment does not change the std of the metric;
+  `effect='multiplicative'` scales the treatment std by (1 + uplift), which gives larger samples.
+- P-values that cannot be computed (e.g. a constant metric) are excluded from the multiple testing correction
+  with a warning.
+
 ## Tutorials
-- [Overview of all library functions](https://github.com/aviasales/ABiasales/blob/master/tutorials/Tutorial%20(all%20functions).ipynb)
-- [Example of experiment analysis](https://github.com/aviasales/ABiasales/blob/master/tutorials/Tutorial%20(experiment%20pipeline).ipynb)
+- [Overview of all library functions](https://github.com/aviasales/ABiasales/blob/main/tutorials/Tutorial%20(all%20functions).ipynb)
+- [Example of experiment analysis](https://github.com/aviasales/ABiasales/blob/main/tutorials/Tutorial%20(experiment%20pipeline).ipynb)
 
 ## Modules
 - `cleaning.py`: outlier handling  
@@ -53,6 +80,13 @@ results = calc_exp_results(
 - `results.py`: A/B test result summaries  
 - `data_generation.py`: synthetic data generation  
 - `simulation.py`: A/A and A/B test simulations  
+
+## Tests
+```bash
+pip install -e ".[test,cupac]"
+pytest              # all tests
+pytest -m "not slow"  # skip statistical calibration tests
+```
 
 
 ## Author

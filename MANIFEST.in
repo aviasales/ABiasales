@@ -1,4 +1,3 @@
 include README.md
-include setup.cfg
 include pyproject.toml
 recursive-include abiasales *.py

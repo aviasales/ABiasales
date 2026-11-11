@@ -1,9 +1,11 @@
 import numpy as np
 import pandas as pd
 from statsmodels.stats.power import tt_ind_solve_power
-from .metrics import calc_pipeline_mean_and_std
+from .metrics import calc_pipeline_mean_and_std, select_columns, valid_metric_mask
+from .results import get_exp_params, check_exp_params
+from .stratification import as_list
 from .weights import calc_weights
-from .stats import weighted_mean, calc_linearization_coef 
+from .stats import weighted_mean, calc_linearization_coef
 
 def calc_power_table(df,
                      metric_num,
@@ -16,10 +18,12 @@ def calc_power_table(df,
                      strats_cols=None,
                      var_reduction_method=None,
                      var_reduction_covariates=None,
-                     alpha=[0.05], power=[0.8], 
-                     uplift=[0.05], sample_size=[1000],
+                     var_reduction_params=None,
+                     alpha=(0.05,), power=(0.8,),
+                     uplift=(0.05,), sample_size=(1000,),
                      control_perc=0.5,
-                     return_power_list=False):
+                     return_power_list=False,
+                     effect='additive'):
     """
     Calculates sample size or minimum detectable effect (MDE) required for given statistical power.
 
@@ -36,8 +40,8 @@ def calc_power_table(df,
         Name of denominator column (e.g., users, sessions). If None, assumes value of 1.
     mode : {'sample_size', 'mde'}, default='sample_size'
         Type of power calculation:
-        - 'sample_size': computes sample size needed to detect given uplifts.
-        - 'mde': computes the minimum detectable uplift for given sample size.
+        - 'sample_size': computes the control group size needed to detect given uplifts.
+        - 'mde': computes the minimum detectable uplift for given control group sizes.
     weight_method : str, default='uniform'
         Weighting strategy ('uniform', 'size', 'sqrt', 'intra_corr').
     apply_linearization : bool, default=False
@@ -52,18 +56,28 @@ def calc_power_table(df,
         Method for variance reduction ('cuped', 'cupac').
     var_reduction_covariates : list of str, optional
         Covariates to use for variance reduction.
-    alpha : list of float, default=[0.05]
+    var_reduction_params : dict, optional
+        Parameters of the CatBoost model for CUPAC.
+    alpha : list of float, default=(0.05,)
         Type I error rates (false positive rate).
-    power : list of float, default=[0.8]
+    power : list of float, default=(0.8,)
         Desired statistical power (1 - Type II error).
-    uplift : list of float, default=[0.05]
+    uplift : list of float, default=(0.05,)
         Expected treatment effect (only for mode='sample_size').
-    sample_size : list of int, default=[1000]
-        Sample sizes to evaluate MDE for (only for mode='mde').
+    sample_size : list of int, default=(1000,)
+        Control group sizes to evaluate MDE for (only for mode='mde').
     control_perc : float, default=0.5
         Proportion of total sample allocated to control group (used to compute treatment size).
     return_power_list : bool, default=False
         Whether to return the list of values in addition to DataFrame.
+    effect : {'additive', 'multiplicative'}, default='additive'
+        How the treatment changes the metric:
+        - 'additive': the std of the treatment group equals the control one;
+        - 'multiplicative': every unit is scaled by (1 + uplift), so the treatment std is (1 + uplift)
+          times larger and the MDE solves a quadratic equation. For such an effect the additive
+          calculation planned 80% power at an MDE of 8.5% and gave 73%.
+        `simulation.run_ab_test_simulation` adds noise with std |uplift| * std to a value metric,
+        so the treatment std is sqrt(1 + uplift^2) times larger, close to the additive case.
 
     Returns
     -------
@@ -73,7 +87,7 @@ def calc_power_table(df,
     Raises
     ------
     ValueError
-        If an unsupported `mode` is passed.
+        If an unsupported `mode` is passed or the methods are incompatible, see `results.check_exp_params`.
 
     Notes
     -----
@@ -81,13 +95,20 @@ def calc_power_table(df,
     - Assumes two-sided testing.
     """
 
-    df_exp = df.copy()
-    if metric_den is None:
-        df_exp['den'] = 1
-        metric_den = 'den'
+    if mode not in ('sample_size', 'mde'):
+        raise ValueError("mode must be 'sample_size' or 'mde'")
+    if effect not in ('additive', 'multiplicative'):
+        raise ValueError("effect must be 'additive' or 'multiplicative'")
+    strats_cols = as_list(strats_cols)
+    check_exp_params(get_exp_params({
+        'num': metric_num, 'den': metric_den, 'weight_method': weight_method,
+        'apply_linearization': apply_linearization, 'use_delta_method': use_delta_method,
+        'use_stratification': use_stratification, 'strats_cols': strats_cols,
+        'var_reduction_method': var_reduction_method, 'var_reduction_covariates': var_reduction_covariates,
+    }))
 
-    df_exp = df_exp[df_exp[metric_num].notnull()]
-    df_exp = df_exp[(df_exp[metric_den].notnull()) & (df_exp[metric_den] != 0)]
+    df_exp = select_columns(df, metric_num, metric_den, strats_cols, var_reduction_covariates)
+    df_exp = df_exp[valid_metric_mask(df_exp, metric_num, metric_den)]
 
     mean, std = calc_pipeline_mean_and_std(
         df_exp,
@@ -99,13 +120,37 @@ def calc_power_table(df,
         use_stratification=use_stratification,
         strats_cols=strats_cols,
         var_reduction_method=var_reduction_method,
-        var_reduction_covariates=var_reduction_covariates
+        var_reduction_covariates=var_reduction_covariates,
+        var_reduction_params=var_reduction_params
     )
 
+    # Linearized metric has zero mean, so the effect is scaled by the mean of the original ratio
     if apply_linearization:
-        weights = calc_weights(df_exp[metric_num], df_exp[metric_den], weight_method)
+        den = df_exp[metric_den] if metric_den else np.ones(len(df_exp))
+        weights = calc_weights(df_exp[metric_num], den, weight_method)
+        r0 = calc_linearization_coef(df_exp[metric_num], den, weights)
+        base = r0 * weighted_mean(den, weights)
+    else:
+        base = mean
 
     r = (1 - control_perc) / control_perc
+
+    # Std of both groups that gives the standard error of the difference with the treatment std (1 + u) * std
+    def effective_std(u):
+        if effect == 'additive':
+            return std
+        return std * np.sqrt((1 + (1 + u) ** 2 / r) / (1 + 1 / r))
+
+    # Uplift u with base * u = h * effective_std(u): a quadratic equation, no solution if the noise grows faster
+    def solve_mde(h):
+        if effect == 'additive':
+            return h * std / base
+        c = (h * std / base) ** 2 / (1 + 1 / r)
+        a = 1 - c / r
+        if a <= 0:
+            return np.inf
+        return (c / r + np.sqrt((c / r) ** 2 + a * c * (1 + 1 / r))) / a
+
     data_ = []
     error_col = r'Errors ($\alpha$, $\beta$)'
 
@@ -116,15 +161,8 @@ def calc_power_table(df,
         for a in alpha:
             for p in power:
                 for u in uplift:
-                    if apply_linearization:
-                        r0 = calc_linearization_coef(df_exp[metric_num], df_exp[metric_den], weights)
-                        mu_den = weighted_mean(df_exp[metric_den], weights)
-                        diff = u * r0 * mu_den
-                    else:
-                        diff = mean * u
-
-                    h = diff / std
-                    n = int(tt_ind_solve_power(effect_size=h, alpha=a, power=p, ratio=r, alternative='two-sided'))
+                    h = base * u / effective_std(u)
+                    n = int(np.ceil(tt_ind_solve_power(effect_size=h, alpha=a, power=p, ratio=r, alternative='two-sided')))
                     data_.append({error_col: f"({a}; {round(1 - p, 2)})", 'Effect': u, '': n})
                     if return_power_list:
                         output_power_list.append(n)
@@ -132,17 +170,12 @@ def calc_power_table(df,
         results = pd.DataFrame(data_).pivot(index='Effect', columns=error_col, values='')
         results.index = [str(round(e * 100, 1)) + '%' for e in results.index]
 
-    elif mode == 'mde':
+    else:
         for a in alpha:
             for p in power:
                 for s in sample_size:
                     h = tt_ind_solve_power(nobs1=s, alpha=a, power=p, ratio=r, alternative='two-sided')
-                    if apply_linearization:
-                        r0 = calc_linearization_coef(df_exp[metric_num], df_exp[metric_den], weights)
-                        mu_den = weighted_mean(df_exp[metric_den], weights)
-                        mde = h * std / (r0 * mu_den)
-                    else:
-                        mde = h * std / mean
+                    mde = solve_mde(np.asarray(h).item())
 
                     data_.append({error_col: f"({a}; {round(1 - p, 2)})", 'Sample size': s, '': str(round(mde * 100, 1)) + '%'})
                     if return_power_list:
@@ -150,9 +183,6 @@ def calc_power_table(df,
 
         results = pd.DataFrame(data_).pivot(index='Sample size', columns=error_col, values='')
         results.index = [str(s) for s in results.index]
-
-    else:
-        raise ValueError("mode должен быть 'sample_size' или 'mde'")
 
     if return_power_list:
         return results, output_power_list
